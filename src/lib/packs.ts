@@ -68,7 +68,7 @@ async function makeCover(
   }
   const dest = groupPublicId ? `${origin}/submit?group=${groupPublicId}` : `${origin}/submit`;
   const qrUrl = await QRCode.toDataURL(dest, { margin: 1, width: 280 });
-  const png = await doc.embedPng(await (await fetch(qrUrl)).arrayBuffer());
+  const png = await doc.embedPng(dataUrlBytes(qrUrl));
   page.drawImage(png, { x: 186, y: 220, width: 240, height: 240 });
   page.drawText("Send your art here", {
     x: 210,
@@ -86,6 +86,14 @@ async function makeCover(
     color: rgb(0.25, 0.25, 0.25),
   });
   return page;
+}
+
+/** Decode a base64 data: URL locally (fetching data: URLs would need a looser Content-Security-Policy). */
+function dataUrlBytes(dataUrl: string): Uint8Array {
+  const bin = atob(dataUrl.slice(dataUrl.indexOf(",") + 1));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 export function downloadBlob(blob: Blob, filename: string) {

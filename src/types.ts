@@ -7,8 +7,7 @@ export type PageTag =
   | "winter"
   | "lantern"
   | "outdoors"
-  | "adventure"
-  | "simple";
+  | "adventure";
 
 export type ColoringPage = {
   id: string;
@@ -109,6 +108,10 @@ export type Submission = {
   originalMime: string;
   originalBytes: number;
   permissions: ConsentPermissions;
+  /** Staff only: the storage generation of the server-made image the reviewer is looking at. */
+  derivedGeneration?: string | null;
+  /** Staff only: false for pieces that never went through the server privacy check. */
+  stripped?: boolean;
 };
 
 export type StaffRole = "ADMIN" | "REVIEWER" | "ART_MANAGER" | "IMPACT_MANAGER";
@@ -131,8 +134,8 @@ export type Collectible = {
   impactVerified: boolean;
 };
 
+/** What getGroup/createGroup return: the public QR code only, never the internal document id. */
 export type Group = {
-  id: string;
   publicId: string;
   label: string;
   createdAt: string;
@@ -157,8 +160,15 @@ export type PublicCounters = {
 
 export type SubmitInput = {
   pageId: string | null;
+  /** The original photo. It is the only thing uploaded. */
   file: File;
-  derivedDataUrl: string;
+  /** On-device preview for the success screen. Never uploaded. */
+  previewDataUrl: string;
+  /** The artist's own straightening choices; the server applies them to the public image. */
+  rotate: 0 | 90 | 180 | 270;
+  cropPct: number;
+  /** Organizations sending art by someone under 18 confirm a guardian agreed. */
+  guardianConsentAttested: boolean;
   submitterRole: SubmitterRole;
   attributionKind: AttributionKind;
   attributionText: string;

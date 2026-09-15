@@ -1,7 +1,15 @@
+/**
+ * OBSOLETE — DO NOT RUN. Kept only for history.
+ * Part of the smoke set for the removed two-upload flow; it resets a real staff password on production and
+ * prints a password-reset link. It exits before touching anything. See README.md "Deploy".
+ */
 import { createRequire } from "module";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { randomBytes } from "crypto";
+
+console.error("scripts/unpublish-smoke.mjs is obsolete and must not be run. See README.md > Deploy.");
+process.exit(1);
 
 const require = createRequire(join(dirname(fileURLToPath(import.meta.url)), "../functions/package.json"));
 const { applicationDefault, initializeApp } = require("firebase-admin/app");

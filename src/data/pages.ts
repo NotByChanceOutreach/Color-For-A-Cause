@@ -1,14 +1,14 @@
-import type { ColoringPage } from "../types";
+import type { ColoringPage, Complexity, PageTag } from "../types";
 
 export const PAGES: ColoringPage[] = [
-  { id: "E01", title: "Happy Pup", slug: "happy-pup", complexity: "easy", tags: ["tent", "simple"], characters: ["pup"], orientation: "portrait", featured: true, displayOrder: 1, createdAt: "2026-09-14", active: true },
-  { id: "E02", title: "Simple Snug", slug: "simple-snug", complexity: "easy", tags: ["sleeping-bag", "simple"], characters: ["snug"], orientation: "portrait", featured: true, displayOrder: 2, createdAt: "2026-09-14", active: true },
-  { id: "E03", title: "Friendly Lodge", slug: "friendly-lodge", complexity: "easy", tags: ["tent", "simple"], characters: ["lodge"], orientation: "portrait", featured: false, displayOrder: 3, createdAt: "2026-09-14", active: true },
-  { id: "E04", title: "Waving Pup", slug: "waving-pup", complexity: "easy", tags: ["tent", "simple"], characters: ["pup"], orientation: "portrait", featured: false, displayOrder: 4, createdAt: "2026-09-14", active: true },
-  { id: "E05", title: "Big Winter Hat", slug: "big-winter-hat", complexity: "easy", tags: ["sleeping-bag", "winter", "simple"], characters: ["snug"], orientation: "portrait", featured: true, displayOrder: 5, createdAt: "2026-09-14", active: true },
-  { id: "E06", title: "Lantern Friend", slug: "lantern-friend", complexity: "easy", tags: ["tent", "lantern", "simple"], characters: ["lodge"], orientation: "portrait", featured: false, displayOrder: 6, createdAt: "2026-09-14", active: true },
-  { id: "E07", title: "Two Friends", slug: "two-friends", complexity: "easy", tags: ["friends", "tent", "sleeping-bag", "simple"], characters: ["pup", "snug"], orientation: "portrait", featured: true, displayOrder: 7, createdAt: "2026-09-14", active: true },
-  { id: "E08", title: "Stacked Bags", slug: "stacked-bags", complexity: "easy", tags: ["tent", "sleeping-bag", "simple"], characters: ["lodge"], orientation: "portrait", featured: false, displayOrder: 8, createdAt: "2026-09-14", active: true },
+  { id: "E01", title: "Happy Pup", slug: "happy-pup", complexity: "easy", tags: ["tent"], characters: ["pup"], orientation: "portrait", featured: true, displayOrder: 1, createdAt: "2026-09-14", active: true },
+  { id: "E02", title: "Simple Snug", slug: "simple-snug", complexity: "easy", tags: ["sleeping-bag"], characters: ["snug"], orientation: "portrait", featured: true, displayOrder: 2, createdAt: "2026-09-14", active: true },
+  { id: "E03", title: "Friendly Lodge", slug: "friendly-lodge", complexity: "easy", tags: ["tent"], characters: ["lodge"], orientation: "portrait", featured: false, displayOrder: 3, createdAt: "2026-09-14", active: true },
+  { id: "E04", title: "Waving Pup", slug: "waving-pup", complexity: "easy", tags: ["tent"], characters: ["pup"], orientation: "portrait", featured: false, displayOrder: 4, createdAt: "2026-09-14", active: true },
+  { id: "E05", title: "Big Winter Hat", slug: "big-winter-hat", complexity: "easy", tags: ["sleeping-bag", "winter"], characters: ["snug"], orientation: "portrait", featured: true, displayOrder: 5, createdAt: "2026-09-14", active: true },
+  { id: "E06", title: "Lantern Friend", slug: "lantern-friend", complexity: "easy", tags: ["tent", "lantern"], characters: ["lodge"], orientation: "portrait", featured: false, displayOrder: 6, createdAt: "2026-09-14", active: true },
+  { id: "E07", title: "Two Friends", slug: "two-friends", complexity: "easy", tags: ["friends", "tent", "sleeping-bag"], characters: ["pup", "snug"], orientation: "portrait", featured: true, displayOrder: 7, createdAt: "2026-09-14", active: true },
+  { id: "E08", title: "Stacked Bags", slug: "stacked-bags", complexity: "easy", tags: ["tent", "sleeping-bag"], characters: ["lodge"], orientation: "portrait", featured: false, displayOrder: 8, createdAt: "2026-09-14", active: true },
   { id: "S01", title: "Warm Drink", slug: "warm-drink", complexity: "standard", tags: ["sleeping-bag", "winter"], characters: ["snug"], orientation: "portrait", featured: true, displayOrder: 9, createdAt: "2026-09-14", active: true },
   { id: "S02", title: "Map Reader", slug: "map-reader", complexity: "standard", tags: ["tent", "adventure"], characters: ["pup"], orientation: "portrait", featured: false, displayOrder: 10, createdAt: "2026-09-14", active: true },
   { id: "S03", title: "Snow Day", slug: "snow-day", complexity: "standard", tags: ["tent", "winter"], characters: ["lodge"], orientation: "portrait", featured: false, displayOrder: 11, createdAt: "2026-09-14", active: true },
@@ -27,10 +27,13 @@ export const PAGES: ColoringPage[] = [
   { id: "D08", title: "Family Camp", slug: "family-camp", complexity: "detailed", tags: ["friends", "outdoors", "winter", "adventure"], characters: ["lodge", "pup", "snug"], orientation: "portrait", featured: true, displayOrder: 24, createdAt: "2026-09-14", active: true },
 ];
 
-export const FILTERS: { id: string; label: string }[] = [
+export const COMPLEXITY_FILTERS: { id: Complexity; label: string }[] = [
   { id: "easy", label: "Easy" },
   { id: "standard", label: "Standard" },
   { id: "detailed", label: "Detailed" },
+];
+
+export const THEME_FILTERS: { id: PageTag; label: string }[] = [
   { id: "tent", label: "Tent" },
   { id: "sleeping-bag", label: "Sleeping bag" },
   { id: "friends", label: "Friends" },
@@ -38,7 +41,6 @@ export const FILTERS: { id: string; label: string }[] = [
   { id: "lantern", label: "Lantern" },
   { id: "outdoors", label: "Outdoors" },
   { id: "adventure", label: "Adventure" },
-  { id: "simple", label: "Simple" },
 ];
 
 export function pageBySlug(slug: string) {
@@ -66,7 +68,26 @@ export function matchesFilter(page: ColoringPage, filter: string) {
   if (filter === "easy" || filter === "standard" || filter === "detailed") {
     return page.complexity === filter;
   }
-  return page.tags.includes(filter as ColoringPage["tags"][number]);
+  return page.tags.includes(filter as PageTag);
+}
+
+export function matchesCatalog(
+  page: ColoringPage,
+  complexity: Complexity | null,
+  theme: PageTag | null,
+) {
+  if (complexity && page.complexity !== complexity) return false;
+  if (theme && !page.tags.includes(theme)) return false;
+  return true;
+}
+
+export function emptyCatalogCopy(complexity: Complexity | null, theme: PageTag | null) {
+  const style = COMPLEXITY_FILTERS.find((f) => f.id === complexity)?.label;
+  const subject = THEME_FILTERS.find((f) => f.id === theme)?.label;
+  if (style && subject) return `No ${style} ${subject} pages yet. Try another style or theme.`;
+  if (style) return `No ${style} pages yet. Try another style or theme.`;
+  if (subject) return `No ${subject} pages yet. Try another style or theme.`;
+  return "No pages match those filters. Try another style or theme.";
 }
 
 export const EASY_PACK = PAGES.filter((p) => p.complexity === "easy").map((p) => p.slug);

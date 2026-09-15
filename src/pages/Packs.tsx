@@ -4,6 +4,41 @@ import { buildActivityPack, downloadBlob } from "../lib/packs";
 import { api } from "../lib/api";
 import { track } from "../lib/analytics";
 
+/** One group code per browser session: every pack printed in this tab (and its QR code) shares it. */
+export const PACK_GROUP_KEY = "cfac-pack-group";
+const GROUP_CODE = /^[0-9a-f]{12}$/;
+
+function rememberedGroup(): string | undefined {
+  try {
+    const v = sessionStorage.getItem(PACK_GROUP_KEY);
+    return v && GROUP_CODE.test(v) ? v : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The session's group code, creating it on first use. Group creation is rate-limited per connection (a school's
+ * whole building can share one), so repeated downloads must not spend a new one each time.
+ */
+async function packGroup(): Promise<string | undefined> {
+  const known = rememberedGroup();
+  if (known) return known;
+  try {
+    const { publicId } = await api.createGroup("Activity pack");
+    if (!GROUP_CODE.test(publicId)) return undefined;
+    try {
+      sessionStorage.setItem(PACK_GROUP_KEY, publicId);
+    } catch {
+      /* private mode: this pack still gets the code, the next one asks again */
+    }
+    return publicId;
+  } catch {
+    // Group codes are rate-limited. The pack still prints; its QR code opens the plain submit page.
+    return undefined;
+  }
+}
+
 export function Packs() {
   const [picked, setPicked] = useState<string[]>(MIXED_PACK);
   const [copies, setCopies] = useState(1);
@@ -16,12 +51,12 @@ export function Packs() {
     setBusy(true);
     setErr(null);
     try {
-      const group = await api.createGroup("Activity pack");
+      const groupPublicId = await packGroup();
       const blob = await buildActivityPack({
         slugs,
         copies: n,
         origin: window.location.origin,
-        groupPublicId: group.publicId,
+        groupPublicId,
         includeInstructions: true,
       });
       downloadBlob(blob, filename);

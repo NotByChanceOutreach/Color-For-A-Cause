@@ -1,34 +1,58 @@
 export const MAX_BYTES = 15 * 1024 * 1024;
-export const ALLOWED_MIME = [
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/webp",
-  "image/heic",
-  "image/heif",
-];
+
+/** What the server accepts (functions/src/constants.ts UPLOAD_TYPES). The form itself never sends HEIC/HEIF. */
+export const UPLOAD_TYPES = ["image/jpeg", "image/png", "image/heic", "image/heif", "image/webp"] as const;
+export type UploadType = (typeof UPLOAD_TYPES)[number];
+
+/**
+ * What the photo pickers ask for. Leaving HEIC out makes iPhones hand over a JPEG,
+ * which the server can always open (most iPhone HEIC files it cannot).
+ */
+export const PHOTO_ACCEPT = "image/jpeg,image/png,image/webp";
+
+export const PHOTO_TYPES_MESSAGE = "Please send a photo (JPG, PNG, or WEBP).";
+export const HEIC_MESSAGE =
+  "That photo is in the iPhone HEIC format, which we can't open. Please send it as a JPG or PNG instead.";
+
+const BY_EXTENSION: Record<string, UploadType> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+};
+
+/**
+ * HEIC/HEIF, by type OR by extension. The server cannot decode most iPhone HEIC files and would only refuse the
+ * picture after the artist had already been told it arrived, so the form says so up front.
+ */
+export function isHeic(file: File): boolean {
+  return /^image\/hei[cf](-sequence)?$/i.test(file.type) || /\.hei[cf]$/i.test(file.name);
+}
+
+/** The exact Content-Type the upload will be signed for, or null if we won't send this file. */
+export function uploadContentType(file: File): UploadType | null {
+  if (isHeic(file)) return null;
+  const mime = file.type.toLowerCase();
+  if (mime === "image/jpg" || mime === "image/pjpeg") return "image/jpeg";
+  if ((UPLOAD_TYPES as readonly string[]).includes(mime)) return mime as UploadType;
+  if (mime && mime !== "application/octet-stream") return null;
+  const ext = /\.([a-z0-9]+)$/i.exec(file.name)?.[1]?.toLowerCase() ?? "";
+  return BY_EXTENSION[ext] ?? null;
+}
 
 export function looksAllowed(file: File): string | null {
   if (file.size > MAX_BYTES) return "That picture is too large. Try one under 15 MB.";
-  const mime = file.type.toLowerCase();
-  const name = file.name.toLowerCase();
-  const okMime = !mime || ALLOWED_MIME.includes(mime);
-  const okName = /\.(jpe?g|png|webp|heic|heif)$/i.test(name);
-  if (!okMime && !okName) return "Please send a photo (JPG, PNG, WEBP, or HEIC).";
-  if (/\.(svg|html?|js|exe|pdf)$/i.test(name)) return "That file type cannot be uploaded.";
+  if (file.size === 0) return "That picture looks empty. Please choose it again.";
+  if (/\.(svg|html?|js|exe|pdf)$/i.test(file.name)) return "That file type cannot be uploaded.";
+  if (isHeic(file)) return HEIC_MESSAGE;
+  if (!uploadContentType(file)) return PHOTO_TYPES_MESSAGE;
   return null;
 }
 
-export async function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Could not read the picture."));
-    reader.onload = () => resolve(String(reader.result));
-    reader.readAsDataURL(file);
-  });
-}
-
-/** Draw through canvas: strips EXIF/GPS from the public derivative. Original File is untouched. */
+/**
+ * Local preview only: draws through a canvas on this device. It is never uploaded;
+ * the server makes the public image from the original.
+ */
 export async function makeDerivative(
   file: File,
   opts: { maxEdge: number; quality?: number; rotate?: number; cropPct?: number },

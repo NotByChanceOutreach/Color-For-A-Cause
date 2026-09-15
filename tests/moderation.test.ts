@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { flagSubmission as serverFlagSubmission } from "../functions/src/moderation";
 import { flagSubmission, isHarmlessWeirdness } from "../src/lib/moderation";
 import { formatArtNumber } from "../src/lib/ids";
 import { looksAllowed } from "../src/lib/files";
@@ -22,6 +23,13 @@ describe("moderation", () => {
 
   it("flags harmful language without auto-deciding", () => {
     expect(flagSubmission("nazi")).toContain("possible_harmful_language");
+  });
+
+  it("an invisible joiner inside a word does not hide it (server and forms alike)", () => {
+    for (const text of ["n\u{200c}azi", "k\u{200c}ys", "po\u{200c}rn", "p\u{200b}o\u{2060}rn", "kid\u{200b}@example.com"]) {
+      expect(flagSubmission(text).length, JSON.stringify(text)).toBeGreaterThan(0);
+      expect(serverFlagSubmission(text)).toEqual(flagSubmission(text));
+    }
   });
 });
 

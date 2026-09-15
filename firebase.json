@@ -6,12 +6,21 @@
   "storage": {
     "rules": "storage.rules"
   },
+  "emulators": {
+    "singleProjectMode": true,
+    "hub": { "host": "127.0.0.1", "port": 4400 },
+    "logging": { "host": "127.0.0.1", "port": 4500 },
+    "firestore": { "host": "127.0.0.1", "port": 8080 },
+    "storage": { "host": "127.0.0.1", "port": 9199 },
+    "ui": { "enabled": false }
+  },
   "functions": [
     {
       "source": "functions",
       "codebase": "default",
+      "runtime": "nodejs22",
       "ignore": ["node_modules", ".git", "src"],
-      "predeploy": ["npm --prefix functions install", "npm --prefix functions run build"]
+      "predeploy": ["npm --prefix functions ci", "npm --prefix functions run build"]
     }
   ],
   "hosting": {
@@ -28,6 +37,14 @@
     ],
     "headers": [
       {
+        "source": "/index.html",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+      },
+      {
+        "regex": "^/[^.]*$",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+      },
+      {
         "source": "/library/print/**",
         "headers": [
           { "key": "Cache-Control", "value": "public, max-age=86400" },
@@ -39,7 +56,11 @@
         "headers": [
           { "key": "X-Content-Type-Options", "value": "nosniff" },
           { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
-          { "key": "X-Frame-Options", "value": "DENY" }
+          { "key": "X-Frame-Options", "value": "DENY" },
+          {
+            "key": "Content-Security-Policy",
+            "value": "default-src 'self'; script-src 'self' https://www.google.com/recaptcha/ https://www.gstatic.com/recaptcha/; style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://firebasestorage.googleapis.com; connect-src 'self' https://firestore.googleapis.com https://firebasestorage.googleapis.com https://storage.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://content-firebaseappcheck.googleapis.com; frame-src https://www.google.com/recaptcha/ https://recaptcha.google.com/recaptcha/; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+          }
         ]
       }
     ]

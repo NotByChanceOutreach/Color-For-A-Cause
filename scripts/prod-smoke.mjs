@@ -1,12 +1,19 @@
 /**
- * Production smoke: submit → unapproved privacy → staff approve → Art Wall.
- * Run from web/functions so firebase-admin resolves: node ../scripts/prod-smoke.mjs
+ * OBSOLETE — DO NOT RUN. Kept only for history.
+ * Written for the removed two-upload flow (it PUTs a browser-made derivative to `derivedUploadUrl`, which
+ * submitArtwork no longer returns), and it resets a real staff password on production. It exits before
+ * touching anything. See README.md "Deploy" for the current release checks.
+ *
+ * (Was: production smoke: submit → unapproved privacy → staff approve → Art Wall.)
  */
 import { createRequire } from "module";
 import { randomBytes } from "crypto";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+
+console.error("scripts/prod-smoke.mjs is obsolete (removed two-upload flow) and must not be run. See README.md > Deploy.");
+process.exit(1);
 
 const require = createRequire(join(dirname(fileURLToPath(import.meta.url)), "../functions/package.json"));
 const { applicationDefault, initializeApp } = require("firebase-admin/app");

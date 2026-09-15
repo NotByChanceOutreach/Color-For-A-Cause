@@ -12,8 +12,15 @@ import type {
 } from "../types";
 import { isPublicOnWall } from "../types";
 import { formatArtNumber, randomId } from "./ids";
+import { ServerRefusal } from "./refusals";
 import { flagSubmission } from "./moderation";
 import { displayName } from "./files";
+import {
+  GUARDIAN_ATTESTATION_REQUIRED,
+  lockPermissions,
+  minorLockApplies,
+  needsGuardianAttestation,
+} from "./minors";
 
 const DB = "nbc-color-for-a-cause";
 const VER = 1;
@@ -94,8 +101,15 @@ export const demoApi = {
 
   async submit(input: SubmitInput): Promise<Submission> {
     if (!input.permissions.store) {
-      throw new Error("We need permission to store the picture in order to receive it.");
+      // A refusal of this one piece, as in production (firebaseBackend.ts), so a group batch flags it and goes on.
+      throw new ServerRefusal("failed-precondition", "We need permission to store the picture in order to receive it.");
     }
+    // Same minor rules as the server (functions/src/minors.ts), so the demo behaves like production.
+    if (needsGuardianAttestation(input.ageRange, input.submitterRole) && !input.guardianConsentAttested) {
+      throw new Error(GUARDIAN_ATTESTATION_REQUIRED);
+    }
+    const locked = minorLockApplies(input.ageRange, input.submitterRole, input.guardianConsentAttested);
+    const permissions = locked ? lockPermissions(input.permissions) : input.permissions;
     const n = await nextNumber();
     const id = randomId("sub");
     const consentId = randomId("con");
@@ -105,7 +119,7 @@ export const demoApi = {
       submissionId: id,
       documentVersion: CONSENT_VERSION,
       submitterRole: input.submitterRole,
-      permissions: input.permissions,
+      permissions,
       timestamp: new Date().toISOString(),
       userAgent: navigator.userAgent,
     };
@@ -119,9 +133,9 @@ export const demoApi = {
       attributionText: input.attributionText,
       ageRange: input.ageRange,
       organizationName: input.organizationName,
-      showOrganization: input.showOrganization,
+      showOrganization: locked ? false : input.showOrganization,
       message: input.message,
-      email: input.email,
+      email: locked ? null : input.email,
       groupId: input.groupId,
       flags,
       consentId,
@@ -129,11 +143,11 @@ export const demoApi = {
       reviewedAt: null,
       reviewedBy: null,
       staffNote: null,
-      imageDataUrl: input.derivedDataUrl,
-      originalName: input.file.name,
+      imageDataUrl: input.previewDataUrl,
+      originalName: "artwork",
       originalMime: input.file.type,
       originalBytes: input.file.size,
-      permissions: input.permissions,
+      permissions,
     };
     await put("consents", consent);
     await put("submissions", sub);
@@ -142,6 +156,10 @@ export const demoApi = {
   },
 
   async getSubmission(id: string) {
+    return (await get<Submission>("submissions", id)) ?? null;
+  },
+
+  async getStaffSubmission(id: string) {
     return (await get<Submission>("submissions", id)) ?? null;
   },
 
@@ -166,7 +184,9 @@ export const demoApi = {
     id: string,
     status: Submission["status"],
     note?: string,
+    derivedGeneration?: string | null,
   ) {
+    void derivedGeneration; // Demo images live in IndexedDB; there is no storage generation to pin.
     const row = await get<Submission>("submissions", id);
     if (!row) throw new Error("Submission not found.");
     row.status = status;
@@ -244,22 +264,19 @@ export const demoApi = {
 
   async createGroup(label: string): Promise<Group> {
     const g: Group = {
-      id: randomId("grp"),
       publicId: randomId("g").replace("g_", "").slice(0, 12),
       label: label || "Art day",
       createdAt: new Date().toISOString(),
     };
-    await put("groups", g);
+    // Like production, the stored row has an internal id that is never handed back.
+    await put("groups", { id: randomId("grp"), ...g });
     return g;
   },
 
-  async getGroupByPublicId(publicId: string) {
-    const rows = await all<Group>("groups");
-    return rows.find((g) => g.publicId === publicId) ?? null;
-  },
-
-  async listGroups() {
-    return all<Group>("groups");
+  async getGroupByPublicId(publicId: string): Promise<Group | null> {
+    const rows = await all<Group & { id?: string }>("groups");
+    const row = rows.find((g) => g.publicId === publicId);
+    return row ? { publicId: row.publicId, label: row.label, createdAt: row.createdAt } : null;
   },
 
   async listCollectibles() {

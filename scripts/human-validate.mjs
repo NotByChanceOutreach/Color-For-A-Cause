@@ -145,6 +145,9 @@ try {
   await clickText("Next");
   await page.waitForFunction(() => /look what you made/i.test(document.body.innerText));
   await clickText("Next");
+  // An unknown age is treated as a possible minor: the naming question only shows for 18+ (or a guardian).
+  await page.waitForSelector("#age");
+  await page.select("#age", "18_plus");
   await page.waitForSelector("#attr");
   await page.type("#attr", "Jamie");
   await clickText("Next");
@@ -179,6 +182,9 @@ try {
   await clickText("Next");
   await page.waitForFunction(() => /look what you made/i.test(document.body.innerText));
   await clickText("Next");
+  // An unknown age is treated as a possible minor: the naming question only shows for 18+ (or a guardian).
+  await page.waitForSelector("#age");
+  await page.select("#age", "18_plus");
   await page.waitForSelector("#attr");
   await page.type("#attr", "PrivateKid");
   await clickText("Next");

@@ -1,8 +1,36 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Link, NavLink, Navigate, Outlet, useNavigate, useParams } from "react-router-dom";
 import { api, useFirebase } from "../lib/api";
+import { staffLoadError } from "../lib/staffErrors";
 import { PAGES, previewUrl } from "../data/pages";
-import type { AuditLog, Collectible, Submission, SubmissionStatus } from "../types";
+import type { AuditLog, Collectible, StaffRole, Submission, SubmissionStatus } from "../types";
+
+/**
+ * Loads one staff list. A role the rules don't allow gets "Your role can’t see this." instead of an empty
+ * table or an unhandled rejection; any other failure gets a plain try-again line.
+ */
+function useStaffList<T>(load: () => Promise<T[]>): { rows: T[]; error: string | null; loading: boolean } {
+  const [state, setState] = useState<{ rows: T[]; error: string | null; loading: boolean }>({ rows: [], error: null, loading: true });
+  useEffect(() => {
+    let live = true;
+    load()
+      .then((rows) => live && setState({ rows, error: null, loading: false }))
+      .catch((err: unknown) => live && setState({ rows: [], error: staffLoadError(err), loading: false }));
+    return () => {
+      live = false;
+    };
+    // The loaders are stable api methods: load once per mount.
+  }, []);
+  return state;
+}
+
+function StaffListError({ error }: { error: string }) {
+  return (
+    <p className="fine" role="status">
+      {error}
+    </p>
+  );
+}
 
 export function StaffGate() {
   const [phase, setPhase] = useState<"wait" | "in" | "out">("wait");
@@ -89,27 +117,35 @@ export function StaffLogin() {
 }
 
 export function StaffHome() {
-  const [subs, setSubs] = useState<Submission[]>([]);
-  useEffect(() => {
-    api.listAllSubmissions().then(setSubs);
-  }, []);
+  const { rows: subs, error, loading } = useStaffList<Submission>(() => api.listAllSubmissions());
   const pending = subs.filter((s) => s.status === "submitted" || s.status === "hold" || s.status === "needs_changes");
   return (
     <>
       <h1>Overview</h1>
-      <p>{pending.length} waiting for a human look. {subs.length} total received.</p>
-      <Link className="btn" to="/staff/submissions">
-        Review queue
-      </Link>
+      {error ? (
+        <StaffListError error={error} />
+      ) : (
+        <>
+          <p>{loading ? "Loading…" : `${pending.length} waiting for a human look. ${subs.length} total received.`}</p>
+          <Link className="btn" to="/staff/submissions">
+            Review queue
+          </Link>
+        </>
+      )}
     </>
   );
 }
 
 export function StaffSubmissions() {
-  const [subs, setSubs] = useState<Submission[]>([]);
-  useEffect(() => {
-    api.listAllSubmissions().then(setSubs);
-  }, []);
+  const { rows: subs, error } = useStaffList<Submission>(() => api.listAllSubmissions());
+  if (error) {
+    return (
+      <>
+        <h1>Submissions</h1>
+        <StaffListError error={error} />
+      </>
+    );
+  }
   return (
     <>
       <h1>Submissions</h1>
@@ -139,22 +175,76 @@ export function StaffSubmissions() {
   );
 }
 
+const ACTIONS: { status: SubmissionStatus; label: string; className: string }[] = [
+  { status: "approved", label: "Approve", className: "btn" },
+  { status: "featured", label: "Feature", className: "btn btn-navy" },
+  { status: "needs_changes", label: "Request changes", className: "btn btn-ghost" },
+  { status: "hold", label: "Hold", className: "btn btn-ghost" },
+  { status: "rejected", label: "Reject", className: "btn btn-rust" },
+  { status: "archived", label: "Archive", className: "btn btn-ghost" },
+];
+
+/** Mirrors canModerate in functions/src/moderate.ts; the server decides. */
+function canModerate(role: StaffRole | undefined, from: SubmissionStatus, to: SubmissionStatus): boolean {
+  if (role === "ADMIN" || role === "REVIEWER") return true;
+  if (role === "ART_MANAGER") {
+    return (from === "approved" && to === "featured") || (from === "featured" && to === "approved");
+  }
+  return false;
+}
+
 export function StaffReview() {
   const { id = "" } = useParams();
   const [sub, setSub] = useState<Submission | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
   useEffect(() => {
-    api.getSubmission(id).then(setSub);
+    let live = true;
+    api
+      .getStaffSubmission(id)
+      .then((s) => {
+        if (!live) return;
+        if (s) setSub(s);
+        else setLoadError("We could not load this submission.");
+      })
+      .catch((err: unknown) => live && setLoadError(staffLoadError(err, "We could not load this submission.")));
+    return () => {
+      live = false;
+    };
   }, [id]);
-  if (!sub) return <p>Loading…</p>;
+
+  // The server-made image arrives as an object URL from the reviewer's own authorized download.
+  const imageUrl = sub?.imageDataUrl;
+  useEffect(() => {
+    return () => {
+      if (imageUrl?.startsWith("blob:")) URL.revokeObjectURL(imageUrl);
+    };
+  }, [imageUrl]);
+
+  if (!sub) return <p>{loadError ?? "Loading…"}</p>;
   const page = PAGES.find((p) => p.id === sub.pageId);
   const staff = api.currentStaff();
   const current = sub;
+  const actions = ACTIONS.filter((a) => canModerate(staff?.role, current.status, a.status));
+
   async function act(status: SubmissionStatus) {
     if (status === "rejected" && !window.confirm("Reject this submission? The original file is still kept.")) return;
-    const next = await api.moderate(staff?.email ?? "staff", current.id, status, note);
-    setSub(next);
+    setBusy(true);
+    setErr(null);
+    try {
+      // derivedGeneration pins publishing to exactly the picture shown above.
+      const next = await api.moderate(staff?.email ?? "staff", current.id, status, note, current.derivedGeneration ?? null);
+      setSub(next);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "That change did not save. Please try again.");
+    } finally {
+      setBusy(false);
+    }
   }
+
   return (
     <>
       <p>
@@ -165,7 +255,14 @@ export function StaffReview() {
         Status: <strong>{sub.status}</strong>
       </p>
       {sub.flags.length > 0 && <p className="flag">Flags: {sub.flags.join(", ")} — still a human decision.</p>}
-      <img src={sub.imageDataUrl} alt="Submitted artwork" style={{ maxWidth: 420, border: "2px solid #000" }} />
+      {sub.imageDataUrl ? (
+        <img src={sub.imageDataUrl} alt="Submitted artwork" style={{ maxWidth: 420, border: "2px solid #000" }} />
+      ) : (
+        <p className="fine">The picture is not available yet.</p>
+      )}
+      {sub.stripped === false && (
+        <p className="flag">This picture was sent before the server privacy check, so it cannot be published.</p>
+      )}
       {page && (
         <p>
           Started as {page.title}
@@ -177,30 +274,23 @@ export function StaffReview() {
         <li>Role: {sub.submitterRole}</li>
         <li>Message: {sub.message || "—"}</li>
         <li>Org: {sub.organizationName || "—"}</li>
-        <li>Original filename: {sub.originalName} ({Math.round(sub.originalBytes / 1024)} KB)</li>
+        <li>Original file: {sub.originalName || "—"} ({Math.round(sub.originalBytes / 1024)} KB)</li>
       </ul>
       <label htmlFor="note">Internal note</label>
-      <textarea id="note" value={note} onChange={(e) => setNote(e.target.value)} />
+      <textarea id="note" maxLength={2000} value={note} onChange={(e) => setNote(e.target.value)} />
+      {err && (
+        <div className="error-box" role="alert">
+          {err}
+        </div>
+      )}
       <div className="btn-row">
-        <button className="btn" type="button" onClick={() => act("approved")}>
-          Approve
-        </button>
-        <button className="btn btn-navy" type="button" onClick={() => act("featured")}>
-          Feature
-        </button>
-        <button className="btn btn-ghost" type="button" onClick={() => act("needs_changes")}>
-          Request changes
-        </button>
-        <button className="btn btn-ghost" type="button" onClick={() => act("hold")}>
-          Hold
-        </button>
-        <button className="btn btn-rust" type="button" onClick={() => act("rejected")}>
-          Reject
-        </button>
-        <button className="btn btn-ghost" type="button" onClick={() => act("archived")}>
-          Archive
-        </button>
+        {actions.map((a) => (
+          <button key={a.status} className={a.className} type="button" disabled={busy} onClick={() => act(a.status)}>
+            {a.label}
+          </button>
+        ))}
       </div>
+      {actions.length === 0 && <p className="fine">Your staff role can look at this piece but not change it.</p>}
     </>
   );
 }
@@ -222,24 +312,26 @@ export function StaffPages() {
 }
 
 export function StaffImpact() {
-  const [cols, setCols] = useState<Collectible[]>([]);
-  useEffect(() => {
-    api.listCollectibles().then(setCols);
-  }, []);
+  const { rows: cols, error } = useStaffList<Collectible>(() => api.listCollectibles());
   return (
     <>
       <h1>Impact</h1>
       <p>Attach Package A or B only when verified. Public counters ignore unverified rows.</p>
-      <p>Collectibles on file: {cols.length}. Minting is not enabled.</p>
+      {error ? <StaffListError error={error} /> : <p>Collectibles on file: {cols.length}. Minting is not enabled.</p>}
     </>
   );
 }
 
 export function StaffLogs() {
-  const [rows, setRows] = useState<AuditLog[]>([]);
-  useEffect(() => {
-    api.audits().then(setRows);
-  }, []);
+  const { rows, error } = useStaffList<AuditLog>(() => api.audits());
+  if (error) {
+    return (
+      <>
+        <h1>Audit log</h1>
+        <StaffListError error={error} />
+      </>
+    );
+  }
   return (
     <>
       <h1>Audit log</h1>
@@ -266,5 +358,3 @@ export function StaffLogs() {
     </>
   );
 }
-
-

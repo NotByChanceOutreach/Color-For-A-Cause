@@ -344,6 +344,9 @@ button.page-card {
   gap: 0.4rem;
   margin: 1rem 0 1.4rem;
 }
+.filters + .filters {
+  margin-top: -0.8rem;
+}
 .filters button {
   min-height: 40px;
   border: 2px solid var(--ink);

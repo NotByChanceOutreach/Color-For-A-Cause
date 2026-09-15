@@ -1,27 +1,24 @@
 /**
  * Production backend: Firestore + Storage + callable Functions.
- * Public visitors never write Firestore; originals are not publicly readable.
+ * Public visitors never write Firestore or Storage rules-side: every write is a callable, and the one
+ * upload is a short-lived signed PUT for the original. The server makes the public image (EXIF/GPS removed).
+ * Staff never write Firestore directly either: moderation and collectibles go through callables.
  */
 import { initializeApp } from "firebase/app";
 import { ReCaptchaEnterpriseProvider, initializeAppCheck } from "firebase/app-check";
 import {
+  browserLocalPersistence,
+  indexedDBLocalPersistence,
+  initializeAuth,
+  onAuthStateChanged,
   signInWithEmailAndPassword,
   signOut,
-  onAuthStateChanged,
-  getAuth,
   type Auth,
   type User,
 } from "firebase/auth";
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  getFirestore,
-  type Firestore,
-} from "firebase/firestore";
+import { collection, doc, getDoc, getDocs, getFirestore, type Firestore } from "firebase/firestore";
 import { getFunctions, httpsCallableFromURL, type Functions } from "firebase/functions";
-import { getDownloadURL, getStorage, ref, type FirebaseStorage } from "firebase/storage";
+import { getBlob, getMetadata, getStorage, ref, type FirebaseStorage } from "firebase/storage";
 import type {
   AuditLog,
   Collectible,
@@ -32,10 +29,20 @@ import type {
   SubmitInput,
 } from "../types";
 import { isPublicOnWall } from "../types";
+import { collectiblePayload } from "./collectibles";
+import { uploadContentType } from "./files";
+import { pollFinalize } from "./finalizeRetry";
+import { ServerRefusal, explainServerError } from "./refusals";
+import { RoleCannotSeeError, asStaffReadError, isPermissionDenied } from "./staffErrors";
 
 export const firebaseReady = Boolean(import.meta.env.VITE_FIREBASE_API_KEY);
 
 const STAFF_ROLES: StaffRole[] = ["ADMIN", "REVIEWER", "ART_MANAGER", "IMPACT_MANAGER"];
+const TRY_AGAIN = "Whoops. That picture didn’t make it through. Let’s try again.";
+const STORE_REQUIRED = "We need permission to store the picture in order to receive it.";
+const PHOTO_TYPES = "Please send a photo (JPG, PNG, or WEBP).";
+/** Rows staff never see: the upload never finished or was refused by the server check. */
+const NOT_FOR_REVIEW = new Set(["uploading", "rejected_upload"]);
 
 let auth: Auth | null = null;
 let db: Firestore | null = null;
@@ -56,7 +63,9 @@ if (firebaseReady) {
     messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
     appId: import.meta.env.VITE_FIREBASE_APP_ID,
   });
-  auth = getAuth(app);
+  // Staff sign in with email + password only. No popup/redirect resolver means no Google auth
+  // iframe or gapi script is loaded on public pages (keeps the Content-Security-Policy tight).
+  auth = initializeAuth(app, { persistence: [indexedDBLocalPersistence, browserLocalPersistence] });
   db = getFirestore(app);
   functions = getFunctions(app, "us-central1");
   storage = getStorage(app);
@@ -68,7 +77,7 @@ if (firebaseReady) {
         isTokenAutoRefreshEnabled: true,
       });
     } catch {
-      /* App Check is not enforced on callables yet. */
+      /* Already initialized (hot reload). Every callable enforces App Check. */
     }
   }
   onAuthStateChanged(auth, (user) => {
@@ -97,12 +106,40 @@ function needFn(): Functions {
   return functions;
 }
 
-function callable(name: string) {
+const CALL_TIMEOUT_MS = 45_000;
+
+/** Reject instead of waiting forever (if reCAPTCHA is blocked, App Check never answers). */
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("We could not reach Not By Chance just now. Please try again in a moment.")),
+      ms,
+    );
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Callables go through the same-origin Hosting rewrite (/c/<name>).
+ * submitArtwork and createGroup send limited-use App Check tokens: the server consumes each one and refuses a
+ * token that was already used, so every call here asks App Check for a fresh one.
+ */
+function callable(name: string, limitedUseAppCheckTokens = false, timeoutMs = CALL_TIMEOUT_MS) {
   const origin =
     typeof window !== "undefined" && window.location?.origin
       ? window.location.origin
       : "https://notbychance-color-for-a-cause.web.app";
-  return httpsCallableFromURL(needFn(), `${origin}/c/${name}`);
+  const fn = httpsCallableFromURL(needFn(), `${origin}/c/${name}`, { limitedUseAppCheckTokens, timeout: timeoutMs });
+  return (data?: unknown) => withTimeout(fn(data), timeoutMs + 5_000);
 }
 
 function cacheKey(id: string) {
@@ -175,39 +212,58 @@ function asPublic(id: string, data: Record<string, unknown>): Submission {
   };
 }
 
-function whoops(err: unknown, fallback: string) {
-  const code = err && typeof err === "object" && "code" in err ? String((err as { code: string }).code) : "";
-  const msg = err instanceof Error ? err.message : "";
-  if (/failed-precondition/i.test(code) || /store the picture|storage permission/i.test(msg)) {
-    return new Error("We need permission to store the picture in order to receive it.");
+const PUBLIC_MESSAGES = /(invalid-argument|failed-precondition|resource-exhausted)$/;
+const STAFF_MESSAGES = /(invalid-argument|failed-precondition|resource-exhausted|permission-denied|aborted|not-found)$/;
+
+/** Server messages for these codes are written for people; everything else gets the fallback (./refusals.ts). */
+const friendly = explainServerError;
+
+/** PUT with exactly the headers the URL was signed for (Content-Type + size range). */
+async function putSigned(url: string, body: Blob, headers: Record<string, string>) {
+  const res = await fetch(url, { method: "PUT", headers, body });
+  if (!res.ok) throw new Error(TRY_AGAIN);
+}
+
+type StartResponse = {
+  id: string;
+  number: string;
+  uploadUrl: string;
+  uploadHeaders: Record<string, string>;
+  finalizeToken: string;
+};
+
+const FINALIZE_ATTEMPTS = 20;
+const FINALIZE_DELAY_MS = 1500;
+
+/**
+ * finalizeSubmission is idempotent. While the server is still making the public image it answers
+ * "processing" and remembers the request; the server finishes the hand-off by itself, so after
+ * ~30 seconds we stop waiting and let the artist go. A call lost in transport is simply asked
+ * again (./finalizeRetry.ts), so a dropped answer does not turn an accepted upload into an error.
+ */
+async function finalizeWithPatience(id: string, finalizeToken: string): Promise<"submitted" | "processing"> {
+  const finish = callable("finalizeSubmission");
+  return pollFinalize(() => finish({ id, finalizeToken }), { attempts: FINALIZE_ATTEMPTS, delayMs: FINALIZE_DELAY_MS });
+}
+
+/** The server-made image, fetched with the reviewer's own credentials, plus the generation they saw. */
+async function loadDerivative(path: unknown): Promise<{ url: string; generation: string | null }> {
+  if (!storage || typeof path !== "string" || !path) return { url: "", generation: null };
+  try {
+    const r = ref(storage, path);
+    const meta = await getMetadata(r);
+    const blob = await getBlob(r);
+    return { url: URL.createObjectURL(blob), generation: meta.generation || null };
+  } catch {
+    return { url: "", generation: null };
   }
-  if (/invalid-argument/i.test(code) && msg) return new Error(msg.replace(/^Firebase:\s*/i, "").replace(/\s*\([^)]*\)\.?$/, "").trim() || fallback);
-  return new Error(fallback);
 }
 
-function dataUrlToBlob(dataUrl: string): Blob {
-  const [head, data] = dataUrl.split(",");
-  const mime = /data:([^;]+)/.exec(head)?.[1] || "image/jpeg";
-  const bin = atob(data);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
-}
-
-async function putSigned(url: string, body: Blob, contentType: string) {
-  const res = await fetch(url, { method: "PUT", headers: { "Content-Type": contentType }, body });
-  if (!res.ok) throw new Error("Whoops. That picture didn’t make it through. Let’s try again.");
-}
-
-async function hydrateStaff(row: Record<string, unknown>, id: string): Promise<Submission> {
-  let imageDataUrl = String(row.imageUrl ?? "");
-  if (!imageDataUrl && storage && typeof row.derivedPath === "string") {
-    try {
-      imageDataUrl = await getDownloadURL(ref(storage, row.derivedPath));
-    } catch {
-      imageDataUrl = "";
-    }
-  }
+function hydrateStaff(
+  row: Record<string, unknown>,
+  id: string,
+  image: { url: string; generation: string | null } = { url: "", generation: null },
+): Submission {
   return {
     id,
     number: String(row.number ?? ""),
@@ -228,7 +284,9 @@ async function hydrateStaff(row: Record<string, unknown>, id: string): Promise<S
     reviewedAt: row.reviewedAt ? stamp(row.reviewedAt) : null,
     reviewedBy: (row.reviewedBy as string | null) ?? null,
     staffNote: (row.staffNote as string | null) ?? null,
-    imageDataUrl,
+    imageDataUrl: image.url,
+    derivedGeneration: image.generation,
+    stripped: row.stripped === true,
     originalName: String(row.originalName ?? ""),
     originalMime: String(row.originalMime ?? ""),
     originalBytes: Number(row.originalBytes ?? 0),
@@ -262,12 +320,12 @@ export const firebaseApi = {
   },
 
   async submit(input: SubmitInput): Promise<Submission> {
-    if (!input.permissions.store) {
-      throw new Error("We need permission to store the picture in order to receive it.");
-    }
+    // A refusal of this one piece (like the server's failed-precondition), so a group batch flags it and goes on.
+    if (!input.permissions.store) throw new ServerRefusal("failed-precondition", STORE_REQUIRED);
+    const contentType = uploadContentType(input.file);
+    if (!contentType) throw new Error(PHOTO_TYPES);
     try {
-      const start = callable("submitArtwork");
-      const started = await start({
+      const started = await callable("submitArtwork", true)({
         pageId: input.pageId,
         submitterRole: input.submitterRole,
         attributionKind: input.attributionKind,
@@ -279,21 +337,15 @@ export const firebaseApi = {
         email: input.email,
         groupId: input.groupId,
         permissions: input.permissions,
-        originalMime: input.file.type || "image/jpeg",
+        originalMime: contentType,
         originalBytes: input.file.size,
-        originalName: input.file.name,
+        rotate: input.rotate,
+        cropPct: input.cropPct,
+        guardianConsentAttested: input.guardianConsentAttested,
       });
-      const data = started.data as {
-        id: string;
-        number: string;
-        originalUploadUrl: string;
-        derivedUploadUrl: string;
-        originalContentType: string;
-      };
-      await putSigned(data.originalUploadUrl, input.file, data.originalContentType);
-      await putSigned(data.derivedUploadUrl, dataUrlToBlob(input.derivedDataUrl), "image/jpeg");
-      const finish = callable("finalizeSubmission");
-      await finish({ id: data.id });
+      const data = started.data as StartResponse;
+      await putSigned(data.uploadUrl, input.file, data.uploadHeaders);
+      await finalizeWithPatience(data.id, data.finalizeToken);
       const sub: Submission = {
         id: data.id,
         number: data.number,
@@ -306,7 +358,7 @@ export const firebaseApi = {
         organizationName: input.organizationName,
         showOrganization: input.showOrganization,
         message: input.message,
-        email: input.email,
+        email: null,
         groupId: input.groupId,
         flags: [],
         consentId: "",
@@ -314,16 +366,17 @@ export const firebaseApi = {
         reviewedAt: null,
         reviewedBy: null,
         staffNote: null,
-        imageDataUrl: input.derivedDataUrl,
-        originalName: input.file.name,
-        originalMime: input.file.type,
+        imageDataUrl: input.previewDataUrl,
+        originalName: "",
+        originalMime: contentType,
         originalBytes: input.file.size,
         permissions: input.permissions,
       };
       remember(sub);
       return sub;
     } catch (err) {
-      throw whoops(err, "Whoops. That picture didn’t make it through. Let’s try again.");
+      // A refusal keeps its code: the forms flag the one piece the server refused (GroupSubmit.tsx, Submit.tsx).
+      throw friendly(err, TRY_AGAIN, PUBLIC_MESSAGES, true);
     }
   },
 
@@ -336,11 +389,26 @@ export const firebaseApi = {
       const mapped = asPublic(id, pub.data() as Record<string, unknown>);
       if (isPublicOnWall(mapped)) return mapped;
     }
-    if (staffCache) {
-      const snap = await getDoc(doc(db, "submissions", id));
-      if (snap.exists()) return hydrateStaff(snap.data() as Record<string, unknown>, id);
-    }
+    if (staffCache) return this.getStaffSubmission(id).catch(() => null);
     return null;
+  },
+
+  /**
+   * The full staff view, straight from the submission record (never the public projection).
+   * Throws RoleCannotSeeError when the signed-in role may not read submissions; other failures give null.
+   */
+  async getStaffSubmission(id: string): Promise<Submission | null> {
+    if (!db || !staffCache) return null;
+    let row: Record<string, unknown>;
+    try {
+      const snap = await getDoc(doc(db, "submissions", id));
+      if (!snap.exists()) return null;
+      row = snap.data() as Record<string, unknown>;
+    } catch (err) {
+      if (isPermissionDenied(err)) throw new RoleCannotSeeError();
+      return null;
+    }
+    return hydrateStaff(row, id, await loadDerivative(row.derivedPath));
   },
 
   async listGallery(): Promise<Submission[]> {
@@ -352,22 +420,39 @@ export const firebaseApi = {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   },
 
+  /** Throws RoleCannotSeeError when the role may not read submissions (IMPACT_MANAGER). */
   async listAllSubmissions(): Promise<Submission[]> {
     if (!db || !staffCache) return [];
-    const snap = await getDocs(collection(db, "submissions"));
-    const rows = await Promise.all(
-      snap.docs
-        .filter((d) => d.data().status !== "uploading")
-        .map((d) => hydrateStaff(d.data() as Record<string, unknown>, d.id)),
-    );
-    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    try {
+      const snap = await getDocs(collection(db, "submissions"));
+      return snap.docs
+        .filter((d) => !NOT_FOR_REVIEW.has(String(d.data().status)))
+        .map((d) => hydrateStaff(d.data() as Record<string, unknown>, d.id))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    } catch (err) {
+      throw asStaffReadError(err);
+    }
   },
 
-  async moderate(actor: string, id: string, status: Submission["status"], note?: string) {
+  async moderate(
+    actor: string,
+    id: string,
+    status: Submission["status"],
+    note?: string,
+    derivedGeneration?: string | null,
+  ) {
     void actor;
-    const fn = callable("moderateSubmission");
-    await fn({ id, status, note: note ?? "" });
-    const next = await this.getSubmission(id);
+    try {
+      await callable("moderateSubmission")({
+        id,
+        status,
+        note: note ?? "",
+        derivedGeneration: derivedGeneration ?? null,
+      });
+    } catch (err) {
+      throw friendly(err, "That change did not save. Please try again.", STAFF_MESSAGES);
+    }
+    const next = await this.getStaffSubmission(id);
     if (!next) throw new Error("Submission not found.");
     return next;
   },
@@ -403,61 +488,64 @@ export const firebaseApi = {
     if (auth) void signOut(auth);
   },
 
+  /** Admin only (rules deny everyone else, so other roles get RoleCannotSeeError without a request). */
   async audits() {
-    if (!db || !staffCache) return [];
-    const snap = await getDocs(collection(db, "auditLogs"));
-    return snap.docs
-      .map((d) => {
-        const row = d.data() as Record<string, unknown>;
-        const item: AuditLog = {
-          id: d.id,
-          at: stamp(row.at),
-          actor: String(row.actor ?? ""),
-          action: String(row.action ?? ""),
-          target: String(row.target ?? ""),
-          detail: String(row.detail ?? ""),
-        };
-        return item;
-      })
-      .sort((a, b) => b.at.localeCompare(a.at));
+    if (!db) return [];
+    if (staffCache?.role !== "ADMIN") throw new RoleCannotSeeError();
+    try {
+      const snap = await getDocs(collection(db, "auditLogs"));
+      return snap.docs
+        .map((d) => {
+          const row = d.data() as Record<string, unknown>;
+          const item: AuditLog = {
+            id: d.id,
+            at: stamp(row.at),
+            actor: String(row.actor ?? ""),
+            action: String(row.action ?? ""),
+            target: String(row.target ?? ""),
+            detail: String(row.detail ?? ""),
+          };
+          return item;
+        })
+        .sort((a, b) => b.at.localeCompare(a.at));
+    } catch (err) {
+      throw asStaffReadError(err);
+    }
   },
 
   async createGroup(label: string): Promise<Group> {
-    const fn = callable("createGroup");
-    const res = await fn({ label: label || "Art day" });
-    return res.data as Group;
+    try {
+      // Short timeout: the pack and batch pages fall back to printing/sending without a group code.
+      const res = await callable("createGroup", true, 10_000)({ label: label || "Art day" });
+      return res.data as Group;
+    } catch (err) {
+      throw friendly(err, "We could not start a group right now. Please try again.", PUBLIC_MESSAGES);
+    }
   },
 
   async getGroupByPublicId(publicId: string) {
-    const fn = callable("getGroup");
-    const res = await fn({ publicId });
+    const res = await callable("getGroup")({ publicId });
     return (res.data as Group | null) ?? null;
   },
 
-  async listGroups() {
-    if (!db || !staffCache) return [];
-    const snap = await getDocs(collection(db, "groups"));
-    return snap.docs.map((d) => {
-      const row = d.data() as Record<string, unknown>;
-      const g: Group = {
-        id: d.id,
-        publicId: String(row.publicId ?? ""),
-        label: String(row.label ?? ""),
-        createdAt: stamp(row.createdAt),
-      };
-      return g;
-    });
-  },
-
+  /** Throws RoleCannotSeeError when the role may not read collectibles (ART_MANAGER). */
   async listCollectibles() {
     if (!db || !staffCache) return [];
-    const snap = await getDocs(collection(db, "collectibles"));
-    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Collectible, "id">) }));
+    try {
+      const snap = await getDocs(collection(db, "collectibles"));
+      return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Collectible, "id">) }));
+    } catch (err) {
+      throw asStaffReadError(err);
+    }
   },
 
   async upsertCollectible(c: Collectible) {
-    const fn = callable("upsertCollectible");
-    await fn(c);
+    try {
+      // Only the allowlisted fields: rows read back also carry server fields the callable rejects.
+      await callable("upsertCollectible")(collectiblePayload(c));
+    } catch (err) {
+      throw friendly(err, "That change did not save. Please try again.", STAFF_MESSAGES);
+    }
     return c;
   },
 };

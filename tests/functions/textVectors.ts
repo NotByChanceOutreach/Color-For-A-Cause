@@ -1,0 +1,145 @@
+/**
+ * Shared test vectors for the text cleaning. Both the server (functions/src/validation.ts) and the forms
+ * (src/lib/text.ts) must turn every input into exactly the expected output (tests/functions/textCore.test.ts).
+ * Every example from the round-3 and round-4 text-cleaning verdicts is here.
+ */
+
+const ZWNJ = "\u{200c}";
+const PERSIAN = "\u{0645}\u{06cc}";
+
+/** [what, input, expected single-line result] */
+export const CLEAN_VECTORS: Array<[string, string, string]> = [
+  // Blank by design: turned into a space, then trimmed.
+  ["U+FFFC twice", "\u{fffc}\u{fffc}", ""],
+  ["Sky + U+FFFC", "Sky\u{fffc}", "Sky"],
+  ["Egyptian full and half blank", "\u{13441}\u{13442}", ""],
+  ["Sky + Egyptian full blank", "Sky \u{13441}", "Sky"],
+  ["ideographic half fill space", "\u{303f}", ""],
+  ["blank symbol", "\u{2422}Sky", "Sky"],
+  ["void notehead", "Sky\u{1d157}", "Sky"],
+  ["null notehead", "Sky\u{1d159}", "Sky"],
+  ["braille blank between letters", "Sk\u{2800}y", "Sk y"],
+  ["Hangul filler between letters", "Sk\u{3164}y", "Sk y"],
+  // Junk: the replacement character is removed.
+  ["replacement character", "Sk\u{fffd}y", "Sky"],
+  // A joiner followed by something that is removed or blanked (single-pass cleaning left it trailing).
+  ["ZWNJ + CGJ", `Sky${ZWNJ}\u{034f}`, "Sky"],
+  ["ZWNJ + Hangul filler", `Sky${ZWNJ}\u{3164}`, "Sky"],
+  ["ZWNJ + VS1", `Sky${ZWNJ}\u{fe00}`, "Sky"],
+  ["ZWNJ + Khmer inherent AQ", `Sky${ZWNJ}\u{17b4}`, "Sky"],
+  ["ZWNJ + VS17", `Sky${ZWNJ}\u{e0100}`, "Sky"],
+  ["ZWNJ + two choseong fillers", `Sky${ZWNJ}\u{115f}\u{115f}`, "Sky"],
+  ["Persian + ZWNJ + CGJ", `${PERSIAN}${ZWNJ}\u{034f}`, PERSIAN],
+  ["Persian + ZWNJ + Hangul filler", `${PERSIAN}${ZWNJ}\u{3164}`, PERSIAN],
+  ["Persian + ZWNJ + VS1", `${PERSIAN}${ZWNJ}\u{fe00}`, PERSIAN],
+  ["Persian + ZWNJ + VS17", `${PERSIAN}${ZWNJ}\u{e0100}`, PERSIAN],
+  ["Persian + ZWNJ + fillers", `${PERSIAN}${ZWNJ}\u{115f}\u{115f}`, PERSIAN],
+  ["group label Art + ZWNJ + CGJ", `Art${ZWNJ}\u{034f}`, "Art"],
+  ["legacy group label", "\u{200b}\u{202e}evil\u{2800}\u{2800}", "evil"],
+  // Joiners between letters: kept where the script uses them, removed where they only hide text.
+  ["Persian ZWNJ", `${PERSIAN}${ZWNJ}\u{0646}\u{0627}`, `${PERSIAN}${ZWNJ}\u{0646}\u{0627}`],
+  ["Hindi ZWNJ", "\u{0915}\u{094d}\u{200c}\u{0937}", "\u{0915}\u{094d}\u{200c}\u{0937}"],
+  ["Sinhala shri (ZWJ)", "\u{0dc1}\u{0dca}\u{200d}\u{0dbb}\u{0dd3}", "\u{0dc1}\u{0dca}\u{200d}\u{0dbb}\u{0dd3}"],
+  ["Malayalam chillu mid-word (ZWJ)", "\u{0d05}\u{0d28}\u{0d4d}\u{200d}\u{0d35}\u{0d7c}", "\u{0d05}\u{0d28}\u{0d4d}\u{200d}\u{0d35}\u{0d7c}"],
+  ["Malayalam trailing ZWJ is not left dangling", "\u{0d28}\u{0d4d}\u{200d}", "\u{0d28}\u{0d4d}"],
+  ["Bengali ya-phala (ZWJ)", "\u{09b0}\u{200d}\u{09cd}\u{09af}\u{09be}\u{09ac}", "\u{09b0}\u{200d}\u{09cd}\u{09af}\u{09be}\u{09ac}"],
+  ["Devanagari eyelash ra (ZWJ)", "\u{0915}\u{093e}\u{0930}\u{094d}\u{200d}\u{092f}", "\u{0915}\u{093e}\u{0930}\u{094d}\u{200d}\u{092f}"],
+  ["Latin ZWNJ hides a word", `n${ZWNJ}azi`, "nazi"],
+  ["Latin ZWNJ hides a word (kys)", `k${ZWNJ}ys`, "kys"],
+  ["Latin ZWNJ hides a word (porn)", `po${ZWNJ}rn`, "porn"],
+  ["Latin ZWJ", "S\u{200d}ky", "Sky"],
+  ["ZWNJ from a Latin letter to a Persian one", "S\u{200c}\u{0645}", "S\u{0645}"],
+  ["ZWNJ from a Persian letter to a Latin one", "\u{0645}\u{200c}S", "\u{0645}S"],
+  ["Cyrillic ZWNJ", "\u{0421}\u{200c}\u{043a}", "\u{0421}\u{043a}"],
+  ["joiner between two combining marks", "e\u{0301}\u{200c}\u{0301}", "\u{00e9}\u{0301}"],
+  // Round 4 (text verdict, item 2): joiners are an ALLOWLIST. Scripts that do not use them lose them.
+  ["Cherokee ZWNJ", "\u{13da}\u{200c}\u{13a9}", "\u{13da}\u{13a9}"],
+  ["Cherokee ZWJ", "\u{13e6}\u{200d}\u{13a9}", "\u{13e6}\u{13a9}"],
+  ["Hebrew ZWNJ", "\u{05e9}\u{200c}\u{05dc}", "\u{05e9}\u{05dc}"],
+  ["Thai ZWNJ", "\u{0e01}\u{200c}\u{0e02}", "\u{0e01}\u{0e02}"],
+  ["Ethiopic ZWJ", "\u{1200}\u{200d}\u{1208}", "\u{1200}\u{1208}"],
+  ["Coptic ZWNJ", "\u{2c80}\u{200c}\u{2c81}", "\u{2c80}\u{2c81}"],
+  ["Lisu ZWNJ", "\u{a4d0}\u{200c}\u{a4d1}", "\u{a4d0}\u{a4d1}"],
+  ["Tibetan ZWJ (stacks are encoded, a joiner does nothing)", "\u{0f40}\u{200d}\u{0f41}", "\u{0f40}\u{0f41}"],
+  ["Greek ZWNJ", "\u{03b1}\u{200c}\u{03b2}", "\u{03b1}\u{03b2}"],
+  ["Han ZWJ", "\u{845b}\u{200d}\u{845b}", "\u{845b}\u{845b}"],
+  // A combining mark between a letter and the joiner does not change the decision.
+  ["Latin letter + mark, ZWNJ, Arabic letter", "a\u{0332}\u{200c}\u{0645}", "a\u{0332}\u{0645}"],
+  ["Arabic letter + shadda, ZWNJ, Arabic letter (kept)", "\u{0645}\u{0651}\u{200c}\u{0646}", "\u{0645}\u{0651}\u{200c}\u{0646}"],
+  ["Devanagari ZWJ to a Bengali letter (two scripts)", "\u{0915}\u{094d}\u{200d}\u{09ac}", "\u{0915}\u{094d}\u{09ac}"],
+  // Item 3: a joiner followed only by combining marks trails in effect.
+  ["Arabic ZWNJ + fathatan at the end", "\u{0645}\u{200c}\u{064b}", "\u{0645}\u{064b}"],
+  ["Devanagari ZWJ + acute at the end", "\u{0928}\u{094d}\u{200d}\u{0301}", "\u{0928}\u{094d}\u{0301}"],
+  ["Arabic ZWNJ + CGJ + acute", "\u{0645}\u{200c}\u{034f}\u{0301}", "\u{0645}\u{0301}"],
+  ["Arabic ZWNJ + mark, then a space", "\u{0645}\u{200c}\u{064b} \u{0646}", "\u{0645}\u{064b} \u{0646}"],
+  // The scripts on the allowlist keep them between their own letters.
+  ["Syriac ZWJ", "\u{0710}\u{200d}\u{0712}", "\u{0710}\u{200d}\u{0712}"],
+  ["N'Ko ZWNJ", "\u{07ca}\u{200c}\u{07cb}", "\u{07ca}\u{200c}\u{07cb}"],
+  ["Mongolian ZWJ", "\u{1820}\u{200d}\u{1821}", "\u{1820}\u{200d}\u{1821}"],
+  ["Urdu ZWNJ", "\u{06a9}\u{200c}\u{06cc}", "\u{06a9}\u{200c}\u{06cc}"],
+  ["Gurmukhi ZWJ", "\u{0a15}\u{0a4d}\u{200d}\u{0a39}", "\u{0a15}\u{0a4d}\u{200d}\u{0a39}"],
+  ["Gujarati ZWJ", "\u{0a95}\u{0acd}\u{200d}\u{0ab7}", "\u{0a95}\u{0acd}\u{200d}\u{0ab7}"],
+  ["Oriya ZWNJ", "\u{0b15}\u{0b4d}\u{200c}\u{0b37}", "\u{0b15}\u{0b4d}\u{200c}\u{0b37}"],
+  ["Tamil ZWNJ", "\u{0b95}\u{0bcd}\u{200c}\u{0bb7}", "\u{0b95}\u{0bcd}\u{200c}\u{0bb7}"],
+  ["Telugu ZWNJ", "\u{0c15}\u{0c4d}\u{200c}\u{0c37}", "\u{0c15}\u{0c4d}\u{200c}\u{0c37}"],
+  ["Kannada ZWJ", "\u{0c95}\u{0ccd}\u{200d}\u{0cb7}", "\u{0c95}\u{0ccd}\u{200d}\u{0cb7}"],
+  // Item 4: the one blank-by-design combining mark becomes a space; marks that draw with a base, private-use and
+  // unassigned characters stay (they draw something, or a box).
+  ["Sky + Khitan small script filler", "Sky\u{16fe4}", "Sky"],
+  ["Khitan small script filler alone", "\u{16fe4}", ""],
+  ["Sky + Egyptian mirror control", "Sky\u{13440}", "Sky\u{13440}"],
+  ["Sky + musical combining stem", "Sky\u{1d165}", "Sky\u{1d165}"],
+  ["Sky + Duployan selectors", "Sky\u{1bc9d}\u{1bc9e}", "Sky\u{1bc9d}\u{1bc9e}"],
+  ["Sky + Tibetan mark tsa -phru", "Sky\u{0f39}", "Sky\u{0f39}"],
+  ["Sky + Latin small w below", "Sky\u{1abf}", "Sky\u{1abf}"],
+  ["Sky + private use", "Sky\u{e000}", "Sky\u{e000}"],
+  ["Sky + plane-15 private use", "Sky\u{f0000}", "Sky\u{f0000}"],
+  ["Sky + unassigned", "Sky\u{0378}", "Sky\u{0378}"],
+  ["Sky + unassigned plane 4", "Sky\u{40000}", "Sky\u{40000}"],
+  ["Sky + unassigned U+2FFFD", "Sky\u{2fffd}", "Sky\u{2fffd}"],
+  // Item 1: Unicode 17 letters are kept by every engine; only the SERVER's tables decide whether a name is readable.
+  ["Sidetic letter (Unicode 17)", "\u{10940}", "\u{10940}"],
+  ["CJK Extension J ideograph (Unicode 17)", "\u{323b0}", "\u{323b0}"],
+  // Emoji: sequences, selectors, keycaps and the three subdivision flags survive; stray tags do not.
+  ["England flag", "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}", "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}"],
+  ["Scotland flag", "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}", "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}"],
+  ["Wales flag", "\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}", "\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}"],
+  ["flag in a message", "Hi \u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}!", "Hi \u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}!"],
+  ["made-up tag flag", "\u{1f3f4}\u{e0041}\u{e007f}", "\u{1f3f4}"],
+  ["tag characters smuggling text", "Sky\u{e0067}\u{e0062}", "Sky"],
+  ["tag characters before a name", "\u{e0041}\u{e0042}hidden", "hidden"],
+  ["VS15 on an emoji", "\u{2764}\u{fe0e}", "\u{2764}\u{fe0e}"],
+  ["VS16 on an emoji", "\u{2764}\u{fe0f}", "\u{2764}\u{fe0f}"],
+  ["ideographic variation selector", "\u{845b}\u{e0100}", "\u{845b}\u{e0100}"],
+  ["ideographic variation selector after Latin", "Sky\u{e0100}", "Sky"],
+  ["Mongolian free variation selector", "\u{1820}\u{180b}", "\u{1820}\u{180b}"],
+  ["Mongolian selector after Latin", "a\u{180b}", "a"],
+  ["keycap #", "#\u{fe0f}\u{20e3}", "#\u{fe0f}\u{20e3}"],
+  ["keycap *", "*\u{fe0f}\u{20e3}", "*\u{fe0f}\u{20e3}"],
+  ["keycap 1", "1\u{fe0f}\u{20e3}", "1\u{fe0f}\u{20e3}"],
+  ["woman artist", "\u{1f469}\u{200d}\u{1f3a8}", "\u{1f469}\u{200d}\u{1f3a8}"],
+  ["rainbow flag", "\u{1f3f3}\u{fe0f}\u{200d}\u{1f308}", "\u{1f3f3}\u{fe0f}\u{200d}\u{1f308}"],
+  ["pirate flag", "\u{1f3f4}\u{200d}\u{2620}\u{fe0f}", "\u{1f3f4}\u{200d}\u{2620}\u{fe0f}"],
+  ["joiners outside a sequence", "Sky\u{200d}\u{fe0f}", "Sky"],
+];
+
+/** [input, has something readable once cleaned] */
+export const NAME_VECTORS: Array<[string, boolean]> = [
+  ["\u{fffc}", false],
+  ["\u{fffc}\u{fffc}", false],
+  ["\u{13441}\u{13442}", false],
+  ["\u{303f}", false],
+  ["\u{2422}", false],
+  ["\u{2800}\u{2800}", false],
+  ["\u{fffd}\u{fffd}", false],
+  ["\u{1d157}\u{1d159}", false],
+  ["...", false],
+  ["#\u{fe0f}\u{20e3}", true],
+  ["*\u{fe0f}\u{20e3}", true],
+  ["Sky\u{fffc}", true],
+  ["\u{0dc1}\u{0dca}\u{200d}\u{0dbb}\u{0dd3}", true],
+  ["\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}", true],
+  ["\u{16fe4}\u{16fe4}", false],
+  ["\u{13da}\u{200c}\u{13a9}", true],
+  ["\u{0645}\u{200c}\u{064b}", true],
+];

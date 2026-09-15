@@ -48,6 +48,10 @@ async function walkSubmit(page, { name, message, pickPage, extraPerms }) {
   await clickText(page, "Next");
   await page.waitForFunction(() => /look what you made/i.test(document.body.innerText));
   await clickText(page, "Next");
+  // An unknown age is treated as a possible minor: the naming question and the public permissions only unlock for
+  // 18+ (or a guardian), so choose 18+ before expecting the name field.
+  await page.waitForSelector("#age");
+  await page.select("#age", "18_plus");
   await page.waitForSelector("#attr");
   if (name) {
     await page.click("#attr", { clickCount: 3 });
@@ -138,10 +142,10 @@ try {
   await page.type("#org", "Community Table");
   const files = await page.$$('input[type="file"]');
   await files[0].uploadFile(ART);
-  const nameInputs = await page.$$("fieldset input[type='text'], fieldset input:not([type])");
-  // fill first artist name
-  const inputs = await page.$$("fieldset input");
-  if (inputs[1]) await inputs[1].type("ArtistOne");
+  // The row's name field only shows once the artist is 18+ (or the organization confirms a guardian agreed).
+  await page.select("#age-0", "18_plus");
+  await page.waitForSelector("#name-0");
+  await page.type("#name-0", "ArtistOne");
   await clickText(page, "Add another artwork");
   const files2 = await page.$$('input[type="file"]');
   await files2[files2.length - 1].uploadFile(ART);

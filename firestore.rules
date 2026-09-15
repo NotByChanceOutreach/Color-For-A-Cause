@@ -1,74 +1,99 @@
 rules_version = '2';
+
+// Client access contract (C9).
+//
+// Nothing a browser does writes Firestore. Public visitors submit through the
+// submitArtwork / finalizeSubmission callables plus a signed Storage URL, and
+// staff change data only through the moderateSubmission, upsertCollectible and
+// createGroup callables. Cloud Functions use the Admin SDK, which bypasses
+// these rules, so every `write` below is false on purpose.
+//
+// Reads are limited to what src/lib/firebaseBackend.ts actually does:
+//   public  : publicGallery (get + list), counters/public (get)
+//   staff   : submissions (get + list), collectibles (list), auditLogs (list)
+// Collection-group queries are never allowed: no rule uses a {path=**}
+// wildcard, so a collectionGroup() query on any collection is denied.
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
-      return request.auth != null;
+    // Staff roles are the custom claim `role`. A missing, misspelled or
+    // non-string claim matches nothing.
+    function hasRole(roles) {
+      return request.auth != null && request.auth.token.get('role', null) in roles;
     }
-    function role() {
-      return signedIn() && request.auth.token.role != null
-        ? request.auth.token.role
-        : '';
-    }
-    function isAdmin() { return role() == 'ADMIN'; }
-    function isReviewer() { return role() in ['ADMIN', 'REVIEWER']; }
-    function isArt() { return role() in ['ADMIN', 'ART_MANAGER']; }
-    function isImpact() { return role() in ['ADMIN', 'IMPACT_MANAGER']; }
-
-    match /coloringPages/{id} {
-      allow read: if resource.data.active == true || isArt();
-      allow write: if isArt();
+    function isAdmin() {
+      return hasRole(['ADMIN']);
     }
 
+    // Sanitized Art Wall documents, written only by moderateSubmission.
     match /publicGallery/{id} {
-      // This collection only contains sanitized public documents.
-      allow read: if true;
-      allow write: if isReviewer();
-    }
-
-    match /submissions/{id} {
-      allow read, write: if isReviewer();
-    }
-
-    match /consents/{id} {
-      allow read, write: if isReviewer();
-    }
-
-    match /consentDocuments/{id} {
-      allow read: if resource.data.status == 'published' || isAdmin();
-      allow write: if isAdmin();
-    }
-
-    match /groups/{id} {
-      allow read: if isReviewer();
-      allow write: if isReviewer();
-    }
-
-    match /collectibles/{id} {
-      allow read: if isReviewer() || isImpact();
-      allow write: if isImpact() || isAdmin();
-    }
-
-    match /impactRecords/{id} {
-      allow read: if isImpact() || isAdmin();
-      allow write: if isImpact() || isAdmin();
-    }
-
-    match /auditLogs/{id} {
-      allow read: if isAdmin();
-      allow create: if isReviewer();
-      allow update, delete: if false;
-    }
-
-    match /counters/{id} {
       allow read: if true;
       allow write: if false;
     }
 
-    match /siteSettings/{id} {
-      allow read: if true;
-      allow write: if isAdmin();
+    // Only the public counter document is readable; counters/art (the
+    // NBC-ART number sequence) and any other counter stay server-only, and
+    // the collection cannot be listed.
+    match /counters/public {
+      allow get: if true;
+      allow list, write: if false;
     }
 
+    // Review queue. ART_MANAGER reads it to pick featured art; IMPACT_MANAGER
+    // has no need for submitter details.
+    match /submissions/{id} {
+      allow read: if hasRole(['ADMIN', 'REVIEWER', 'ART_MANAGER']);
+      allow write: if false;
+    }
+
+    // Consent records and the audit trail: ADMIN only.
+    match /consents/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+    match /auditLogs/{id} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Group publicIds are the QR secret. The public flow resolves them with
+    // the getGroup callable; no client reads or lists groups directly.
+    match /groups/{id} {
+      allow read, write: if false;
+    }
+
+    // Collectibles and impact records keep their existing staff reads.
+    // Writes go through upsertCollectible.
+    match /collectibles/{id} {
+      allow read: if hasRole(['ADMIN', 'REVIEWER', 'IMPACT_MANAGER']);
+      allow write: if false;
+    }
+    match /impactRecords/{id} {
+      allow read: if hasRole(['ADMIN', 'IMPACT_MANAGER']);
+      allow write: if false;
+    }
+
+    // Library and public-copy collections keep their existing reads. The
+    // current client ships the page list statically, so nothing writes these.
+    match /coloringPages/{id} {
+      allow read: if resource.data.active == true || hasRole(['ADMIN', 'ART_MANAGER']);
+      allow write: if false;
+    }
+    match /consentDocuments/{id} {
+      allow read: if resource.data.status == 'published' || isAdmin();
+      allow write: if false;
+    }
+    match /siteSettings/{id} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Per-IP abuse counters are server-only (explicit for readability; the
+    // catch-all below would deny them anyway).
+    match /rateLimits/{document=**} {
+      allow read, write: if false;
+    }
+
+    // Everything else, including subcollections of the paths above.
     match /{document=**} {
       allow read, write: if false;
     }

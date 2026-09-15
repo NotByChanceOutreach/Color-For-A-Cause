@@ -1,35 +1,57 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { FILTERS, PAGES, matchesFilter, thumbUrl } from "../data/pages";
+import {
+  COMPLEXITY_FILTERS,
+  PAGES,
+  THEME_FILTERS,
+  emptyCatalogCopy,
+  matchesCatalog,
+  thumbUrl,
+} from "../data/pages";
 import { tiltFromId } from "../lib/ids";
 import { track } from "../lib/analytics";
 import { Pin, Tape } from "../components/ArtKit";
+import type { Complexity, PageTag } from "../types";
 
 export function Library() {
-  const [on, setOn] = useState<string[]>([]);
-  const pages = useMemo(() => {
-    if (!on.length) return PAGES;
-    return PAGES.filter((p) => on.every((f) => matchesFilter(p, f)));
-  }, [on]);
+  const [complexity, setComplexity] = useState<Complexity | null>(null);
+  const [theme, setTheme] = useState<PageTag | null>(null);
+  const pages = useMemo(
+    () => PAGES.filter((p) => matchesCatalog(p, complexity, theme)),
+    [complexity, theme],
+  );
 
-  function toggle(id: string) {
-    setOn((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  function pickComplexity(id: Complexity) {
+    setComplexity(id);
+  }
+
+  function pickTheme(id: PageTag) {
+    setTheme(id);
   }
 
   return (
     <div className="wrap section">
       <p className="kicker">Sketchbook</p>
       <h1>Choose a page</h1>
-      <p>Easy, standard, or detailed — pick what feels good to color. Easy is not “for kids only.” It is just bigger shapes.</p>
-      <div className="filters" role="group" aria-label="Filter pages">
-        {FILTERS.map((f) => (
-          <button key={f.id} type="button" aria-pressed={on.includes(f.id)} onClick={() => toggle(f.id)}>
+      <p>Easy, Standard, or Detailed — pick what feels good to color. Easy is not “for kids only.” It is just bigger shapes.</p>
+      <div className="filters" role="group" aria-label="Complexity">
+        {COMPLEXITY_FILTERS.map((f) => (
+          <button key={f.id} type="button" aria-pressed={complexity === f.id} onClick={() => pickComplexity(f.id)}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+      <div className="filters" role="group" aria-label="Theme">
+        {THEME_FILTERS.map((f) => (
+          <button key={f.id} type="button" aria-pressed={theme === f.id} onClick={() => pickTheme(f.id)}>
             {f.label}
           </button>
         ))}
       </div>
       {pages.length === 0 ? (
-        <p>Those labels hid every page. Try turning one off.</p>
+        <div className="paper" role="status">
+          <p>{emptyCatalogCopy(complexity, theme)}</p>
+        </div>
       ) : (
         <div className="sketch-table">
           <div className="gallery">

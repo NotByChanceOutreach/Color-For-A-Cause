@@ -1,33 +1,63 @@
 rules_version = '2';
+
+// Client access contract (C9).
+//
+// No client ever writes Storage: submitArtwork hands out a short-lived V4
+// signed PUT URL for submissions/{id}/original/upload, and signed URLs bypass
+// these rules. Every other object is written by Cloud Functions (Admin SDK).
+//
+// Only `get` (download / metadata) is ever granted. `list` is never granted,
+// so no prefix can be enumerated by anyone, staff included.
 service firebase.storage {
   match /b/{bucket}/o {
-    function staff() {
-      return request.auth != null &&
-        request.auth.token.role in ['ADMIN', 'REVIEWER', 'ART_MANAGER', 'IMPACT_MANAGER'];
+    // Staff roles are the custom claim `role`. A missing, misspelled or
+    // non-string claim matches nothing.
+    function hasRole(roles) {
+      return request.auth != null && request.auth.token.get('role', null) in roles;
     }
 
-    match /coloring-pages/{pageId}/{allPaths=**} {
-      allow read: if true;
-      allow write: if request.auth != null &&
-        request.auth.token.role in ['ADMIN', 'ART_MANAGER'];
+    // Submission ids are minted server-side as sub_ + 16 random bytes in hex.
+    function isSubmissionId(id) {
+      return id.matches('sub_[0-9a-f]{32}');
     }
 
-    match /submissions/{submissionId}/original/{file} {
-      allow read: if staff();
-      allow write: if false;
+    // Published Art Wall image: the one public object per approved piece,
+    // copied here by moderateSubmission from the server-made derivative with
+    // NO download token. The wall loads it through the tokenless URL
+    // (/v0/b/<bucket>/o/gallery%2F<id>%2Fpublic.jpg?alt=media), which this
+    // rule checks on every read: readable only while the piece is on the
+    // wall, i.e. while its publicGallery document exists. A file left behind
+    // after unpublishing (a removal that failed, a publish that never
+    // committed) is therefore unreadable at once; the daily retention job
+    // deletes it. Download-token URLs bypass these rules entirely, so none is
+    // issued, and a token a reader minted with getDownloadURL while the piece
+    // was on the wall is revoked on unpublish and by the retention job.
+    // Cross-service rule: the Cloud Storage service agent needs
+    // roles/firebaserules.firestoreServiceAgent (README, Deploy: cross-service
+    // rules).
+    match /gallery/{submissionId}/public.jpg {
+      allow get: if isSubmissionId(submissionId)
+        && firestore.exists(/databases/(default)/documents/publicGallery/$(submissionId));
     }
 
-    match /submissions/{submissionId}/derived/{file} {
-      allow read: if staff();
-      allow write: if false;
+    // Server-made, metadata-stripped public-size derivative shown in the
+    // review queue.
+    match /submissions/{submissionId}/derived/{path=**} {
+      allow get: if hasRole(['ADMIN', 'REVIEWER', 'ART_MANAGER']);
     }
 
-    match /gallery/{submissionId}/{file} {
-      allow read: if true;
-      allow write: if false;
+    // The upload and the stripped original: ADMIN only.
+    match /submissions/{submissionId}/original/{path=**} {
+      allow get: if hasRole(['ADMIN']);
     }
 
-    match /{allPaths=**} {
+    // Library assets (public printables), kept readable as before.
+    match /coloring-pages/{pageId}/{path=**} {
+      allow get: if true;
+    }
+
+    // Everything else: no reads, no listing, no writes.
+    match /{path=**} {
       allow read, write: if false;
     }
   }

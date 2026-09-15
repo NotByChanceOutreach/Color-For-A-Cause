@@ -7,9 +7,13 @@ const ADDRESSY =
 
 const BLOCK = ["kill yourself", "kys", "nazi", "rape", "porn", "child porn", "bomb threat"];
 
+/** Joiners, variation selectors and every other invisible character: gone before matching, so "n\u200cazi" is caught. */
+const INVISIBLE = /[\p{Default_Ignorable_Code_Point}\p{Cf}]/gu;
+
+/** Mirrored by src/lib/moderation.ts (tests/moderation.test.ts). */
 export function flagSubmission(text: string): string[] {
   const flags: string[] = [];
-  const sample = text || "";
+  const sample = (text || "").replace(INVISIBLE, "");
   if (EMAIL.test(sample)) flags.push("possible_email");
   if (PHONE.test(sample)) flags.push("possible_phone");
   if (URL.test(sample)) flags.push("possible_url");

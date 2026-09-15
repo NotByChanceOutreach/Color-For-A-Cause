@@ -67,12 +67,15 @@ if (typeof indexedDB === "undefined") {
   globalThis.indexedDB = memoryIndexedDB();
 }
 
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: (q: string) => ({
-    matches: false,
-    media: q,
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-  }),
-});
+// Files that opt into the node environment (// @vitest-environment node) have no window.
+if (typeof window !== "undefined") {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: (q: string) => ({
+      matches: false,
+      media: q,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }),
+  });
+}

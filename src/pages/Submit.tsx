@@ -4,14 +4,31 @@ import { CONSENT_FIELDS, CONSENT_NOTICE, CONSENT_VERSION, MESSAGE_EXAMPLES, empt
 import { PAGES, thumbUrl } from "../data/pages";
 import { api } from "../lib/api";
 import { track } from "../lib/analytics";
-import { fileToDataUrl, looksAllowed, makeDerivative } from "../lib/files";
+import { PHOTO_ACCEPT, looksAllowed, makeDerivative } from "../lib/files";
+import {
+  GUARDIAN_ATTESTATION_LABEL,
+  MINOR_LOCKED_KEYS,
+  asksGuardianAttestation,
+  emailReason,
+  lockPermissions,
+  lockReason,
+  minorLockApplies,
+  needsGuardianAttestation,
+} from "../lib/minors";
+import { isNameRefusal } from "../lib/refusals";
+import { readableName } from "../lib/text";
 import type { AgeRange, AttributionKind, ConsentPermissions, SubmitterRole } from "../types";
+
+const GROUP_CODE = /^[0-9a-f]{12}$/;
 
 export function Submit() {
   const [params] = useSearchParams();
   const nav = useNavigate();
   const [step, setStep] = useState(1);
-  const [pageId, setPageId] = useState<string | null>(params.get("page"));
+  const [pageId, setPageId] = useState<string | null>(() => {
+    const requested = params.get("page");
+    return requested && PAGES.some((p) => p.id === requested) ? requested : null;
+  });
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [rotate, setRotate] = useState(0);
@@ -25,13 +42,52 @@ export function Submit() {
   const [message, setMessage] = useState("");
   const [email, setEmail] = useState("");
   const [perms, setPerms] = useState<ConsentPermissions>(emptyPermissions());
+  const [guardianOk, setGuardianOk] = useState(false);
+  const [groupId, setGroupId] = useState<string | null>(null);
+  const [groupLabel, setGroupLabel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const groupId = params.get("group");
+  /** The server's refusal of the name, shown at the name question. */
+  const [nameProblem, setNameProblem] = useState<string | null>(null);
+  const groupParam = params.get("group");
+  // Same rules the server enforces (functions/src/minors.ts); here they only explain themselves.
+  // Protective default: until we know the artist is 18+, or a guardian (or an organization that confirms a
+  // guardian agreed) is sending, everything public stays off and the public-naming question is hidden.
+  const locked = minorLockApplies(age, role, guardianOk);
+  const asksAttest = asksGuardianAttestation(age, role);
+  const needsAttest = needsGuardianAttestation(age, role);
+  // An organization unlocks the naming question on the permission step (the guardian box is there), so the question
+  // is asked there too: nobody has to go back two steps to answer it.
+  const nameOnPermissionStep = asksAttest && !locked;
 
   useEffect(() => {
     track("submission_started");
   }, []);
+
+  // Only a group code the server knows is attached. An old QR code still lets people send art.
+  useEffect(() => {
+    if (!groupParam || !GROUP_CODE.test(groupParam)) return;
+    let live = true;
+    api
+      .getGroupByPublicId(groupParam)
+      .then((g) => {
+        if (live && g) {
+          setGroupId(g.publicId);
+          setGroupLabel(g.label);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [groupParam]);
+
+  useEffect(() => {
+    if (!locked) return;
+    setPerms((p) => lockPermissions(p));
+    setShowOrg(false);
+    setEmail("");
+  }, [locked]);
 
   async function onFile(f: File | undefined) {
     if (!f) return;
@@ -58,13 +114,17 @@ export function Submit() {
   const errors = useMemo(() => {
     const e: string[] = [];
     if (step >= 2 && !file) e.push("Please add a photo of the finished page.");
-    if (step >= 4 && attrKind !== "anonymous" && !attrText.trim()) e.push("Type a first name, a nickname, or choose Anonymous.");
+    // Judged like the server does: a name of only invisible or blank characters is no name.
+    if (step >= 4 && !locked && attrKind !== "anonymous" && !readableName(attrText)) e.push("Type a first name, a nickname, or choose Anonymous.");
     if (step >= 6 && !perms.store) e.push("We need permission to store the artwork so we can receive it.");
     if (step >= 6 && role === "guardian" && (perms.displayPublic || perms.collectible) && !perms.store) {
       e.push("A grown-up needs to allow storage before public or collectible permissions.");
     }
+    if (step >= 6 && needsAttest && !guardianOk) {
+      e.push("Please confirm a parent or guardian agreed, or change who is sending the art.");
+    }
     return e;
-  }, [step, file, attrKind, attrText, perms.store, perms.displayPublic, perms.collectible, role]);
+  }, [step, file, attrKind, attrText, locked, perms.store, perms.displayPublic, perms.collectible, role, needsAttest, guardianOk]);
 
   async function finish(ev: FormEvent) {
     ev.preventDefault();
@@ -75,37 +135,110 @@ export function Submit() {
     setBusy(true);
     setError(null);
     try {
-      const originalUrl = await fileToDataUrl(file);
-      void originalUrl;
+      const quarterTurn = (((rotate % 360) + 360) % 360) as 0 | 90 | 180 | 270;
       const sub = await api.submit({
         pageId,
         file,
-        derivedDataUrl: preview,
+        previewDataUrl: preview,
+        rotate: quarterTurn,
+        cropPct,
         submitterRole: role,
-        attributionKind: attrKind,
-        attributionText: attrKind === "anonymous" ? "" : attrText,
+        // While locked the public-naming question is hidden, so no name is sent.
+        attributionKind: locked ? "anonymous" : attrKind,
+        attributionText: locked || attrKind === "anonymous" ? "" : readableName(attrText) ?? "",
         ageRange: age,
         organizationName: org.trim() || null,
-        showOrganization: showOrg && Boolean(org.trim()),
+        showOrganization: !locked && showOrg && Boolean(org.trim()),
         message,
-        email: email.trim() || null,
+        email: locked ? null : email.trim() || null,
         groupId,
-        permissions: perms,
+        permissions: locked ? lockPermissions(perms) : perms,
+        guardianConsentAttested: asksAttest && guardianOk,
       });
       track("submission_completed");
       nav(`/submit/success/${sub.id}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Whoops. That picture didn’t make it through. Let’s try again.");
+      if (isNameRefusal(e)) {
+        // The server decides names (its Unicode tables may be older than this browser's): its answer is shown at the
+        // name question, on the step where that question is.
+        setNameProblem(e.message);
+        if (!nameOnPermissionStep) setStep(4);
+      } else {
+        setError(e instanceof Error ? e.message : "Whoops. That picture didn’t make it through. Let’s try again.");
+      }
     } finally {
       setBusy(false);
     }
   }
+
+  const nameChoice = (
+    <fieldset>
+      <legend>How should we name the artist in public, if we show it?</legend>
+      <label className="choice">
+        <input
+          type="radio"
+          name="attr"
+          checked={attrKind === "firstName"}
+          onChange={() => {
+            setAttrKind("firstName");
+            setNameProblem(null);
+          }}
+        />
+        First name
+      </label>
+      <label className="choice">
+        <input
+          type="radio"
+          name="attr"
+          checked={attrKind === "nickname"}
+          onChange={() => {
+            setAttrKind("nickname");
+            setNameProblem(null);
+          }}
+        />
+        Nickname
+      </label>
+      <label className="choice">
+        <input
+          type="radio"
+          name="attr"
+          checked={attrKind === "anonymous"}
+          onChange={() => {
+            setAttrKind("anonymous");
+            setNameProblem(null);
+          }}
+        />
+        Anonymous
+      </label>
+      {attrKind !== "anonymous" && (
+        <>
+          <label htmlFor="attr">Name or nickname</label>
+          <input
+            id="attr"
+            name="attribution"
+            maxLength={80}
+            value={attrText}
+            onChange={(e) => {
+              setAttrText(e.target.value);
+              setNameProblem(null);
+            }}
+          />
+        </>
+      )}
+      {nameProblem && (
+        <p className="flag" role="alert">
+          {nameProblem}
+        </p>
+      )}
+    </fieldset>
+  );
 
   return (
     <div className="wrap section">
       <p className="kicker">Refrigerator door</p>
       <h1>Send us your art</h1>
       <p>About one or two minutes on a phone. No account.</p>
+      {groupLabel && <p className="fine">Sending as part of: {groupLabel}</p>}
       {error && (
         <div className="error-box" role="alert" style={{ margin: "1rem 0" }}>
           <strong>Whoops.</strong>
@@ -158,7 +291,7 @@ export function Submit() {
                       hidden
                       name="photo-camera"
                       type="file"
-                      accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+                      accept={PHOTO_ACCEPT}
                       capture="environment"
                       onChange={(e) => onFile(e.target.files?.[0])}
                     />
@@ -169,7 +302,7 @@ export function Submit() {
                       hidden
                       name="photo-file"
                       type="file"
-                      accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+                      accept={PHOTO_ACCEPT}
                       onChange={(e) => onFile(e.target.files?.[0])}
                     />
                   </label>
@@ -233,27 +366,6 @@ export function Submit() {
               <option value="organization">Someone participating through my organization</option>
               <option value="someone_else">Someone else (I have permission)</option>
             </select>
-            <fieldset>
-              <legend>How should we name the artist in public, if we show it?</legend>
-              <label className="choice">
-                <input type="radio" name="attr" checked={attrKind === "firstName"} onChange={() => setAttrKind("firstName")} />
-                First name
-              </label>
-              <label className="choice">
-                <input type="radio" name="attr" checked={attrKind === "nickname"} onChange={() => setAttrKind("nickname")} />
-                Nickname
-              </label>
-              <label className="choice">
-                <input type="radio" name="attr" checked={attrKind === "anonymous"} onChange={() => setAttrKind("anonymous")} />
-                Anonymous
-              </label>
-              {attrKind !== "anonymous" && (
-                <>
-                  <label htmlFor="attr">Name or nickname</label>
-                  <input id="attr" name="attribution" value={attrText} onChange={(e) => setAttrText(e.target.value)} />
-                </>
-              )}
-            </fieldset>
             <label htmlFor="age">Age range (optional)</label>
             <select id="age" name="age" value={age} onChange={(e) => setAge(e.target.value as AgeRange)}>
               <option value="prefer_not">Prefer not to say</option>
@@ -261,10 +373,24 @@ export function Submit() {
               <option value="13_17">13–17</option>
               <option value="18_plus">18+</option>
             </select>
+            {locked ? (
+              <p className="fine" role="note">
+                {lockReason(age, role)}
+              </p>
+            ) : (
+              nameChoice
+            )}
             <label htmlFor="org">Organization or group (optional)</label>
-            <input id="org" name="organization" value={org} onChange={(e) => setOrg(e.target.value)} placeholder="school, community group, family…" />
+            <input
+              id="org"
+              name="organization"
+              maxLength={120}
+              value={org}
+              onChange={(e) => setOrg(e.target.value)}
+              placeholder="school, community group, family…"
+            />
             <label className="choice">
-              <input type="checkbox" checked={showOrg} onChange={(e) => setShowOrg(e.target.checked)} />
+              <input type="checkbox" checked={showOrg} disabled={locked} onChange={(e) => setShowOrg(e.target.checked)} />
               If the art is shown, you may mention this group (not required)
             </label>
             <p className="btn-row">
@@ -283,10 +409,26 @@ export function Submit() {
             <legend>One more thing…</legend>
             <p>Want to say something with your art?</p>
             <label htmlFor="msg">Your message (optional)</label>
-            <textarea id="msg" name="message" value={message} onChange={(e) => setMessage(e.target.value)} />
+            <textarea id="msg" name="message" maxLength={2000} value={message} onChange={(e) => setMessage(e.target.value)} />
             <p className="fine">Ideas, not rules: {MESSAGE_EXAMPLES.join(" · ")} Or whatever you want.</p>
-            <label htmlFor="email">Email if you want a note that we got it (optional)</label>
-            <input id="email" name="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+            {locked ? (
+              <p className="fine" role="note">
+                {emailReason(age)}
+              </p>
+            ) : (
+              <>
+                <label htmlFor="email">Email if you want a note that we got it (optional)</label>
+                <input
+                  id="email"
+                  name="email"
+                  type="email"
+                  maxLength={254}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  autoComplete="email"
+                />
+              </>
+            )}
             <p className="btn-row">
               <button className="btn btn-ghost" type="button" onClick={() => setStep(4)}>
                 Back
@@ -302,21 +444,44 @@ export function Submit() {
           <fieldset>
             <legend>Permission</legend>
             <p className="fine">{CONSENT_NOTICE} Version {CONSENT_VERSION}.</p>
-            {CONSENT_FIELDS.map((f) => (
-              <label className="choice" key={f.key}>
+            {asksAttest && (
+              <label className="choice">
                 <input
                   type="checkbox"
-                  name={f.key}
-                  checked={perms[f.key]}
-                  onChange={(e) => setPerms({ ...perms, [f.key]: e.target.checked })}
+                  name="guardianConsentAttested"
+                  checked={guardianOk}
+                  onChange={(e) => setGuardianOk(e.target.checked)}
                 />
                 <span>
-                  <strong>{f.label}</strong>
-                  <br />
-                  <span className="fine">{f.help}</span>
+                  <strong>{GUARDIAN_ATTESTATION_LABEL}</strong>
                 </span>
               </label>
-            ))}
+            )}
+            {nameOnPermissionStep && nameChoice}
+            {locked && (
+              <p className="fine" role="note">
+                {lockReason(age, role)}
+              </p>
+            )}
+            {CONSENT_FIELDS.map((f) => {
+              const off = locked && MINOR_LOCKED_KEYS.includes(f.key);
+              return (
+                <label className="choice" key={f.key}>
+                  <input
+                    type="checkbox"
+                    name={f.key}
+                    checked={off ? false : perms[f.key]}
+                    disabled={off}
+                    onChange={(e) => setPerms({ ...perms, [f.key]: e.target.checked })}
+                  />
+                  <span>
+                    <strong>{f.label}</strong>
+                    <br />
+                    <span className="fine">{f.help}</span>
+                  </span>
+                </label>
+              );
+            })}
             {errors.length > 0 && (
               <div className="error-box" role="alert">
                 {errors.map((e) => (
