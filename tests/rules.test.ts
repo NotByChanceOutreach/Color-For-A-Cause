@@ -9,6 +9,10 @@ describe("security rules source", () => {
     expect(firestore).toMatch(/match \/submissions\/\{id\}/);
     expect(firestore).toMatch(/allow read, write: if isReviewer/);
   });
+  it("lets anyone read the public gallery collection", () => {
+    expect(firestore).toMatch(/match \/publicGallery\/\{id\}/);
+    expect(firestore).toMatch(/allow read: if true/);
+  });
   it("does not allow unauthenticated original uploads via rules", () => {
     expect(storage).toMatch(/match \/submissions\/\{submissionId\}\/original/);
     expect(storage).toMatch(/allow write: if false/);

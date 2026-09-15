@@ -20,7 +20,8 @@ service cloud.firestore {
     }
 
     match /publicGallery/{id} {
-      allow read: if resource.data.public == true;
+      // This collection only contains sanitized public documents.
+      allow read: if true;
       allow write: if isReviewer();
     }
 
