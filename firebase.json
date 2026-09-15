@@ -17,7 +17,15 @@
   "hosting": {
     "public": "dist",
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
-    "rewrites": [{ "source": "**", "destination": "/index.html" }],
+    "rewrites": [
+      { "source": "/c/submitArtwork", "function": { "functionId": "submitArtwork", "region": "us-central1" } },
+      { "source": "/c/finalizeSubmission", "function": { "functionId": "finalizeSubmission", "region": "us-central1" } },
+      { "source": "/c/moderateSubmission", "function": { "functionId": "moderateSubmission", "region": "us-central1" } },
+      { "source": "/c/createGroup", "function": { "functionId": "createGroup", "region": "us-central1" } },
+      { "source": "/c/getGroup", "function": { "functionId": "getGroup", "region": "us-central1" } },
+      { "source": "/c/upsertCollectible", "function": { "functionId": "upsertCollectible", "region": "us-central1" } },
+      { "source": "**", "destination": "/index.html" }
+    ],
     "headers": [
       {
         "source": "/library/print/**",

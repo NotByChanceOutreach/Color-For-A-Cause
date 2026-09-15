@@ -20,7 +20,7 @@ import {
   getFirestore,
   type Firestore,
 } from "firebase/firestore";
-import { getFunctions, httpsCallable, type Functions } from "firebase/functions";
+import { getFunctions, httpsCallableFromURL, type Functions } from "firebase/functions";
 import { getDownloadURL, getStorage, ref, type FirebaseStorage } from "firebase/storage";
 import type {
   AuditLog,
@@ -62,10 +62,14 @@ if (firebaseReady) {
   storage = getStorage(app);
   const siteKey = import.meta.env.VITE_FIREBASE_APPCHECK_SITE_KEY;
   if (siteKey) {
-    initializeAppCheck(app, {
-      provider: new ReCaptchaEnterpriseProvider(siteKey),
-      isTokenAutoRefreshEnabled: true,
-    });
+    try {
+      initializeAppCheck(app, {
+        provider: new ReCaptchaEnterpriseProvider(siteKey),
+        isTokenAutoRefreshEnabled: true,
+      });
+    } catch {
+      /* App Check is not enforced on callables yet. */
+    }
   }
   onAuthStateChanged(auth, (user) => {
     void applyUser(user).finally(() => resolveReady());
@@ -91,6 +95,14 @@ async function applyUser(user: User | null) {
 function needFn(): Functions {
   if (!functions) throw new Error("Firebase is not configured.");
   return functions;
+}
+
+function callable(name: string) {
+  const origin =
+    typeof window !== "undefined" && window.location?.origin
+      ? window.location.origin
+      : "https://notbychance-color-for-a-cause.web.app";
+  return httpsCallableFromURL(needFn(), `${origin}/c/${name}`);
 }
 
 function cacheKey(id: string) {
@@ -254,7 +266,7 @@ export const firebaseApi = {
       throw new Error("We need permission to store the picture in order to receive it.");
     }
     try {
-      const start = httpsCallable(needFn(), "submitArtwork");
+      const start = callable("submitArtwork");
       const started = await start({
         pageId: input.pageId,
         submitterRole: input.submitterRole,
@@ -280,7 +292,7 @@ export const firebaseApi = {
       };
       await putSigned(data.originalUploadUrl, input.file, data.originalContentType);
       await putSigned(data.derivedUploadUrl, dataUrlToBlob(input.derivedDataUrl), "image/jpeg");
-      const finish = httpsCallable(needFn(), "finalizeSubmission");
+      const finish = callable("finalizeSubmission");
       await finish({ id: data.id });
       const sub: Submission = {
         id: data.id,
@@ -353,7 +365,7 @@ export const firebaseApi = {
 
   async moderate(actor: string, id: string, status: Submission["status"], note?: string) {
     void actor;
-    const fn = httpsCallable(needFn(), "moderateSubmission");
+    const fn = callable("moderateSubmission");
     await fn({ id, status, note: note ?? "" });
     const next = await this.getSubmission(id);
     if (!next) throw new Error("Submission not found.");
@@ -411,13 +423,13 @@ export const firebaseApi = {
   },
 
   async createGroup(label: string): Promise<Group> {
-    const fn = httpsCallable(needFn(), "createGroup");
+    const fn = callable("createGroup");
     const res = await fn({ label: label || "Art day" });
     return res.data as Group;
   },
 
   async getGroupByPublicId(publicId: string) {
-    const fn = httpsCallable(needFn(), "getGroup");
+    const fn = callable("getGroup");
     const res = await fn({ publicId });
     return (res.data as Group | null) ?? null;
   },
@@ -444,7 +456,7 @@ export const firebaseApi = {
   },
 
   async upsertCollectible(c: Collectible) {
-    const fn = httpsCallable(needFn(), "upsertCollectible");
+    const fn = callable("upsertCollectible");
     await fn(c);
     return c;
   },
