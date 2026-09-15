@@ -1,0 +1,16 @@
+node_modules
+dist
+functions/lib
+functions/node_modules
+.firebase
+.env
+.env.development
+.env.production.local
+.env.development.local
+*.log
+.DS_Store
+previews/
+tsconfig.tsbuildinfo
+*-firebase-adminsdk-*.json
+serviceAccount*.json
+.secret.local

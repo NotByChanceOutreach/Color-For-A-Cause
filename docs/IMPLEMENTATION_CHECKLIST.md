@@ -1,0 +1,23 @@
+# Implementation checklist
+
+- [x] Public browse / filter / detail
+- [x] Print one (screen + PDF + PNG)
+- [x] Activity packs + QR instruction cover
+- [x] Submit wizard (page, photo, rotate, attribution, message, consent)
+- [x] Guardian / organization submitter roles
+- [x] Success screen with NBC-ART number
+- [x] Art Wall (approved only; empty state honest)
+- [x] Before/after on artwork detail
+- [x] 1-of-1 explainer (no minting)
+- [x] Impact packages + verified counters
+- [x] Host an Art Day + group multi-submit
+- [x] Grown-ups, privacy, consent, standards, accessibility, contact
+- [x] Staff dashboard + roles + audit log
+- [x] Moderation flags, no auto-publish
+- [x] Firebase rules + functions stubs
+- [x] Demo backend (IndexedDB) for local
+- [x] Tests for validation, moderation, permissions, print helpers
+- [ ] Firebase project provisioned (blocker for cloud deploy)
+- [ ] Legal review of consent v0.1 (blocker for production)
+- [ ] App Check keys
+- [ ] Custom domain / Hosting

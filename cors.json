@@ -1,0 +1,13 @@
+[
+  {
+    "origin": [
+      "https://notbychance-color-for-a-cause.web.app",
+      "https://notbychance-color-for-a-cause.firebaseapp.com",
+      "http://127.0.0.1:5173",
+      "http://localhost:5173"
+    ],
+    "method": ["GET", "PUT", "HEAD", "OPTIONS"],
+    "responseHeader": ["Content-Type", "x-goog-resumable"],
+    "maxAgeSeconds": 3600
+  }
+]
